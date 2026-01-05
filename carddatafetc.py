@@ -1,186 +1,244 @@
 import streamlit as st
+import requests
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+import json
+import time
+from datetime import datetime
 from io import BytesIO
 import base64
-import json
-from datetime import datetime
 
 # Page configuration
 st.set_page_config(
-    page_title="Card Ladder Analytics",
+    page_title="Card Ladder Fetcher",
     page_icon="📊",
     layout="wide"
 )
 
-# Session state for data
-if 'df' not in st.session_state:
-    st.session_state.df = None
+# Session state
+if 'cards_data' not in st.session_state:
+    st.session_state.cards_data = None
+if 'df_cards' not in st.session_state:
+    st.session_state.df_cards = None
+if 'auth_token' not in st.session_state:
+    st.session_state.auth_token = ""
 
 # Title
-st.title("📊 Card Ladder Collection Analytics")
+st.title("📊 Card Ladder Collection Fetcher")
 
-# Sidebar for file upload
-with st.sidebar:
-    st.header("📁 Upload Data")
+# Main container - ONE TAB
+tab1 = st.container()
+
+with tab1:
+    # Split into two columns
+    col1, col2 = st.columns([1, 2])
     
-    uploaded_file = st.file_uploader(
-        "Upload your JSON or CSV file",
-        type=['json', 'csv']
-    )
-    
-    if uploaded_file:
-        try:
-            if uploaded_file.name.endswith('.json'):
-                data = json.load(uploaded_file)
-                if 'cards' in data:
-                    cards = data['cards']
+    with col1:
+        # Authentication section
+        st.subheader("🔐 Authentication")
+        auth_token = st.text_area(
+            "Bearer Token",
+            value=st.session_state.auth_token,
+            height=100,
+            placeholder="Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImEzOGVhNmEwNDA4YjBjYzVkYTE4OWRmYzg4ODgyZDBmMWI3ZmJmMGUiLCJ0eXAiOiJKV1QifQ...",
+            help="Get from Card Ladder DevTools"
+        )
+        
+        if st.button("Save Token"):
+            if auth_token and auth_token.startswith('Bearer '):
+                st.session_state.auth_token = auth_token
+                st.success("Token saved!")
+            else:
+                st.error("Token must start with 'Bearer '")
+        
+        st.divider()
+        
+        # Fetch parameters
+        st.subheader("⚙️ Fetch Parameters")
+        collection_id = st.text_input(
+            "Collection ID",
+            value="9Kr6jcPHdz77FNU9TVS4",
+            help="Find in your collection URL"
+        )
+        
+        query = st.text_input(
+            "Search Query (Optional)",
+            placeholder="e.g., Mike Trout, PSA 10"
+        )
+        
+        limit = st.selectbox(
+            "Cards per page",
+            options=[20, 50, 100],
+            index=0
+        )
+        
+        # Fetch buttons
+        col_fetch1, col_fetch2 = st.columns(2)
+        with col_fetch1:
+            if st.button("🔍 Test Connection", use_container_width=True):
+                if st.session_state.auth_token:
+                    with st.spinner("Testing..."):
+                        headers = {
+                            'authorization': st.session_state.auth_token,
+                            'accept': 'application/json'
+                        }
+                        params = {
+                            'index': 'collectioncards',
+                            'limit': 5,
+                            'filters': f'collectionId:{collection_id}',
+                            'page': 1
+                        }
+                        try:
+                            response = requests.get(
+                                'https://search-zzvl7ri3bq-uc.a.run.app/search',
+                                headers=headers,
+                                params=params,
+                                timeout=10
+                            )
+                            if response.status_code == 200:
+                                st.success("✅ Connection successful!")
+                            else:
+                                st.error(f"Connection failed: {response.status_code}")
+                        except:
+                            st.error("Connection failed")
                 else:
-                    cards = data
+                    st.error("Please save token first")
+        
+        with col_fetch2:
+            fetch_button = st.button("🚀 Fetch Collection", type="primary", use_container_width=True)
+    
+    with col2:
+        # Results and download section
+        st.subheader("📊 Results & Download")
+        
+        if fetch_button and st.session_state.auth_token:
+            # Fetch collection
+            with st.spinner("Fetching collection..."):
+                headers = {
+                    'authorization': st.session_state.auth_token,
+                    'accept': 'application/json'
+                }
                 
-                # Convert to DataFrame
-                flat_data = []
-                for card in cards:
-                    flat_card = {}
-                    for key, value in card.items():
-                        if isinstance(value, dict):
-                            for subkey, subvalue in value.items():
-                                flat_card[f"{key}_{subkey}"] = subvalue
-                        elif isinstance(value, list):
-                            flat_card[key] = '; '.join(map(str, value))
+                all_results = []
+                page = 1
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                while True:
+                    status_text.text(f"Fetching page {page}...")
+                    
+                    params = {
+                        'index': 'collectioncards',
+                        'query': query,
+                        'limit': limit,
+                        'filters': f'collectionId:{collection_id}|hasQuantityAvailable:true',
+                        'sort': 'dateAdded',
+                        'direction': 'desc',
+                        'page': page
+                    }
+                    
+                    try:
+                        response = requests.get(
+                            'https://search-zzvl7ri3bq-uc.a.run.app/search',
+                            headers=headers,
+                            params=params,
+                            timeout=30
+                        )
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            
+                            # Extract results
+                            results = []
+                            if 'results' in data:
+                                results = data['results']
+                            elif 'cards' in data:
+                                results = data['cards']
+                            elif 'items' in data:
+                                results = data['items']
+                            else:
+                                for key, value in data.items():
+                                    if isinstance(value, list):
+                                        results = value
+                                        break
+                            
+                            if results:
+                                all_results.extend(results)
+                                progress = min(100, (page * 10))
+                                progress_bar.progress(progress)
+                                
+                                if len(results) < limit:
+                                    break
+                                page += 1
+                                time.sleep(0.3)
+                            else:
+                                break
                         else:
-                            flat_card[key] = value
-                    flat_data.append(flat_card)
+                            st.error(f"Error: {response.status_code}")
+                            break
+                            
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                        break
                 
-                st.session_state.df = pd.DataFrame(flat_data)
+                progress_bar.progress(100)
+                status_text.text(f"✅ Fetched {len(all_results)} cards!")
+                time.sleep(0.5)
+                progress_bar.empty()
+                status_text.empty()
                 
-            else:  # CSV
-                st.session_state.df = pd.read_csv(uploaded_file)
-            
-            st.success(f"✅ Loaded {len(st.session_state.df)} cards")
-            
-        except Exception as e:
-            st.error(f"Error loading file: {e}")
-    
-    if st.session_state.df is not None:
-        st.divider()
-        st.metric("Total Cards", len(st.session_state.df))
-        if 'value' in st.session_state.df.columns:
-            total_value = st.session_state.df['value'].astype(float).sum()
-            st.metric("Total Value", f"${total_value:,.2f}")
-
-# Main content - ONLY 3 TABS
-if st.session_state.df is not None:
-    tab1, tab2, tab3 = st.tabs(["📊 Analytics", "💾 Export Data", "⚙️ Settings"])
-    
-    df = st.session_state.df
-    
-    with tab1:  # Analytics
-        st.header("Analytics Dashboard")
+                # Store in session state
+                if all_results:
+                    st.session_state.cards_data = all_results
+                    
+                    # Convert to DataFrame
+                    flat_data = []
+                    for card in all_results:
+                        flat_card = {}
+                        for key, value in card.items():
+                            if isinstance(value, dict):
+                                for subkey, subvalue in value.items():
+                                    flat_card[f"{key}_{subkey}"] = subvalue
+                            elif isinstance(value, list):
+                                flat_card[key] = '; '.join(map(str, value))
+                            else:
+                                flat_card[key] = value
+                        flat_data.append(flat_card)
+                    
+                    st.session_state.df_cards = pd.DataFrame(flat_data)
         
-        # Quick stats
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
+        # Show results if available
+        if st.session_state.df_cards is not None:
+            df = st.session_state.df_cards
+            
+            # Stats
             st.metric("Total Cards", len(df))
-        with col2:
-            if 'value' in df.columns:
-                total_value = df['value'].astype(float).sum()
-                st.metric("Total Value", f"${total_value:,.2f}")
-        with col3:
-            if 'year' in df.columns:
-                st.metric("Avg Year", f"{df['year'].astype(float).mean():.0f}")
-        with col4:
-            if 'grade' in df.columns:
-                st.metric("Unique Grades", df['grade'].nunique())
-        
-        st.divider()
-        
-        # Visualizations
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            # Grade Distribution
-            if 'grade' in df.columns:
-                grade_counts = df['grade'].value_counts().reset_index()
-                grade_counts.columns = ['Grade', 'Count']
-                
-                fig_grade = px.bar(
-                    grade_counts,
-                    x='Grade',
-                    y='Count',
-                    title='Grade Distribution',
-                    color='Count',
-                    color_continuous_scale='Blues'
-                )
-                st.plotly_chart(fig_grade, use_container_width=True)
             
-            # Year Distribution
-            if 'year' in df.columns:
-                year_counts = df['year'].value_counts().reset_index()
-                year_counts.columns = ['Year', 'Count']
-                year_counts = year_counts.sort_values('Year')
-                
-                fig_year = px.line(
-                    year_counts,
-                    x='Year',
-                    y='Count',
-                    title='Cards by Year',
-                    markers=True
-                )
-                st.plotly_chart(fig_year, use_container_width=True)
-        
-        with col_right:
-            # Value Distribution
             if 'value' in df.columns:
-                df['value'] = pd.to_numeric(df['value'], errors='coerce')
-                fig_value = px.histogram(
-                    df,
-                    x='value',
-                    title='Value Distribution',
-                    nbins=30,
-                    color_discrete_sequence=['#1E88E5']
-                )
-                fig_value.update_layout(xaxis_title="Value ($)", yaxis_title="Count")
-                st.plotly_chart(fig_value, use_container_width=True)
+                try:
+                    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                    total_value = df['value'].sum()
+                    st.metric("Total Value", f"${total_value:,.2f}")
+                except:
+                    pass
             
-            # Top Players
-            if 'player' in df.columns:
-                player_counts = df['player'].value_counts().head(10).reset_index()
-                player_counts.columns = ['Player', 'Count']
-                
-                fig_players = px.pie(
-                    player_counts,
-                    values='Count',
-                    names='Player',
-                    title='Top 10 Players'
-                )
-                st.plotly_chart(fig_players, use_container_width=True)
-        
-        # Data Table
-        st.divider()
-        st.header("Data Preview")
-        st.dataframe(df.head(100), use_container_width=True)
-    
-    with tab2:  # Export Data
-        st.header("Export Options")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        # CSV Export
-        with col1:
-            st.subheader("CSV Format")
-            csv = df.to_csv(index=False).encode('utf-8')
+            # Download section
+            st.divider()
+            st.subheader("💾 Download Options")
+            
+            # Create timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # CSV Download
+            csv_data = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Download CSV",
-                data=csv,
-                file_name=f"cardladder_export_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                data=csv_data,
+                file_name=f"cardladder_{timestamp}.csv",
+                mime="text/csv",
+                use_container_width=True
             )
-        
-        # Excel Export
-        with col2:
-            st.subheader("Excel Format")
+            
+            # Excel Download
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name='Cards')
@@ -189,131 +247,51 @@ if st.session_state.df is not None:
             st.download_button(
                 label="📊 Download Excel",
                 data=excel_data,
-                file_name=f"cardladder_export_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=f"cardladder_{timestamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
             )
-        
-        # JSON Export
-        with col3:
-            st.subheader("JSON Format")
-            json_str = df.to_json(orient='records', indent=2)
+            
+            # JSON Download
+            json_data = json.dumps({
+                'metadata': {
+                    'total_cards': len(df),
+                    'timestamp': timestamp,
+                    'collection_id': collection_id
+                },
+                'cards': st.session_state.cards_data
+            }, indent=2).encode('utf-8')
+            
             st.download_button(
                 label="📄 Download JSON",
-                data=json_str,
-                file_name=f"cardladder_export_{datetime.now().strftime('%Y%m%d')}.json",
-                mime="application/json"
-            )
-        
-        st.divider()
-        
-        # Custom Export
-        st.header("Custom Export")
-        
-        all_columns = list(df.columns)
-        selected_columns = st.multiselect(
-            "Select columns to export",
-            options=all_columns,
-            default=all_columns
-        )
-        
-        if selected_columns:
-            df_custom = df[selected_columns]
-            st.dataframe(df_custom.head(10), use_container_width=True)
-            
-            # Custom CSV
-            custom_csv = df_custom.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Custom CSV",
-                data=custom_csv,
-                file_name=f"cardladder_custom_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-    
-    with tab3:  # Settings
-        st.header("Settings")
-        
-        # Display Settings
-        st.subheader("Display Settings")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            theme = st.selectbox(
-                "Chart Theme",
-                options=['plotly', 'plotly_white', 'plotly_dark', 'seaborn', 'ggplot2']
+                data=json_data,
+                file_name=f"cardladder_{timestamp}.json",
+                mime="application/json",
+                use_container_width=True
             )
             
-            preview_rows = st.slider(
-                "Preview Rows",
-                min_value=10,
-                max_value=200,
-                value=50
-            )
+            # Data preview
+            st.divider()
+            st.subheader("📋 Data Preview")
+            st.dataframe(df.head(20), use_container_width=True)
         
-        with col2:
-            default_export = st.selectbox(
-                "Default Export Format",
-                options=['CSV', 'Excel', 'JSON']
-            )
-            
-            auto_refresh = st.checkbox(
-                "Auto-refresh charts",
-                value=True
-            )
-        
-        # Data Settings
-        st.subheader("Data Settings")
-        
-        if st.button("Clear All Data"):
-            st.session_state.df = None
-            st.rerun()
-        
-        if st.button("Load Sample Data"):
-            # Create sample data
-            sample_data = {
-                'player': ['Mike Trout', 'Mike Trout', 'Shohei Ohtani', 'Aaron Judge', 'Shohei Ohtani'],
-                'year': [2011, 2012, 2018, 2017, 2019],
-                'grade': ['PSA 10', 'BGS 9.5', 'PSA 9', 'SGC 10', 'RAW'],
-                'value': [1200.50, 850.00, 2500.00, 1800.00, 950.00],
-                'setName': ['Topps Update', 'Topps Chrome', 'Bowman Chrome', 'Topps Update', 'Topps Chrome']
-            }
-            st.session_state.df = pd.DataFrame(sample_data)
-            st.rerun()
+        # Clear button
+        if st.session_state.df_cards is not None:
+            if st.button("🗑️ Clear Results", type="secondary"):
+                st.session_state.cards_data = None
+                st.session_state.df_cards = None
+                st.rerun()
 
-else:
-    # Welcome screen when no data is loaded
-    st.info("👈 Upload your Card Ladder data file in the sidebar to begin")
-    
-    # Show sample of what the app can do
-    with st.expander("📋 What this app can do"):
-        st.write("""
-        ### 📊 Analytics Tab:
-        - Grade distribution charts
-        - Year distribution analysis  
-        - Value distribution histograms
-        - Top players visualization
-        - Interactive data table
-        
-        ### 💾 Export Tab:
-        - Export to CSV, Excel, or JSON
-        - Custom column selection
-        - Direct download buttons
-        
-        ### ⚙️ Settings Tab:
-        - Customize chart themes
-        - Adjust display settings
-        - Clear or load sample data
-        """)
-    
-    # Quick start guide
-    with st.expander("🚀 Quick Start"):
-        st.write("""
-        1. Export your Card Ladder collection as JSON or CSV
-        2. Upload it in the sidebar
-        3. Explore the analytics dashboard
-        4. Export in your preferred format
-        """)
-
-# Footer
-st.divider()
-st.caption("Card Ladder Analytics Tool v1.0 | Upload your collection data to get started")
+# Instructions in sidebar
+with st.sidebar:
+    st.header("📋 How to Get Token")
+    st.markdown("""
+    1. Login to [Card Ladder](https://app.cardladder.com)
+    2. Open DevTools (F12)
+    3. Go to Network tab
+    4. Refresh page
+    5. Find request to:
+       `search-zzvl7ri3bq-uc.a.run.app/search`
+    6. Copy `authorization` header
+    7. Paste in Bearer Token field
+    """)
