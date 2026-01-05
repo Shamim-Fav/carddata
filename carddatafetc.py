@@ -3,132 +3,134 @@ import requests
 import json
 import time
 import pandas as pd
-from datetime import datetime
 
 # --- Page Config ---
 st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
 
-# Initialize Session States
 if 'full_data' not in st.session_state:
     st.session_state.full_data = []
 
-# --- Custom Styling ---
-st.markdown("""
-    <style>
-    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- Sidebar: Authentication ---
+# --- Sidebar ---
 with st.sidebar:
     st.header("🔐 Authentication")
-    token_input = st.text_area("Paste Bearer Token:", height=150, help="Copy from Network tab (starts with 'Bearer ')")
-    
-    if st.button("Clear Saved Results"):
+    token_input = st.text_area("Paste Bearer Token:", height=150)
+    st.divider()
+    if st.button("🗑️ Reset App"):
         st.session_state.full_data = []
         st.rerun()
 
-# --- Main App ---
 st.title("📦 Card Ladder Full Collection Scraper")
 
-# 1. Configuration Row
-col1, col2, col3 = st.columns([2, 1, 1])
+# --- 1. Settings ---
+col1, col2 = st.columns([2, 1])
 with col1:
-    coll_id = st.text_input("Collection ID", value="9Kr6jcPHdz77FNU9TVS4")
+    coll_id = st.text_input("Collection ID", value="AKnq10aqnUmBxKyGKBUK")
 with col2:
-    sort_by = st.selectbox("Sort By", ['dateAdded', 'name', 'player', 'year', 'grade', 'value'])
-with col3:
-    st.write(" ") # alignment
     st.write(" ")
-    start_btn = st.button("🚀 Scrape All Items", use_container_width=True)
+    st.write(" ")
+    run_scrape = st.button("🚀 Scrape Entire Collection", use_container_width=True)
 
-# 2. Scraper Engine
-if start_btn:
+# --- 2. Scraping Engine ---
+if run_scrape:
     if not token_input:
-        st.error("Please paste your Bearer Token in the sidebar!")
+        st.error("Please provide a token in the sidebar!")
     else:
-        # Preparation
         all_results = []
-        page = 1
-        limit = 20 # Standard page size
+        current_page = 0  # Start at 0 as per your payload
+        limit = 20
         has_more = True
         
         headers = {
+            'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}",
             'accept': 'application/json, text/plain, */*',
-            'origin': 'https://app.cardladder.com',
-            'referer': 'https://app.cardladder.com/',
-            'authorization': token_input if token_input.startswith("Bearer ") else f"Bearer {token_input}",
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+            'Cache-Control': 'no-cache', # Forces fresh data
+            'Pragma': 'no-cache'
         }
 
-        # Progress UI
-        status_msg = st.empty()
+        status_ui = st.empty()
         progress_bar = st.progress(0)
         
         while has_more:
-            status_msg.info(f"Scraping Page {page}... (Total cards found: {len(all_results)})")
+            status_ui.info(f"Scraping Page {current_page}... Items found: {len(all_results)}")
             
+            # Using your exact URL parameters
             params = {
                 'index': 'collectioncards',
+                'query': '',
+                'page': current_page,
                 'limit': limit,
                 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true',
-                'sort': sort_by,
-                'direction': 'desc',
-                'page': page
+                'sort': 'dateAdded',
+                'direction': 'asc',
+                't': int(time.time()) # Cache buster to avoid 304 status
             }
             
             try:
-                response = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params)
+                response = requests.get(
+                    'https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                    headers=headers, 
+                    params=params,
+                    timeout=20
+                )
                 
                 if response.status_code == 200:
                     data = response.json()
                     
-                    # Logic to find the list regardless of key name (results, items, cards)
-                    page_items = next((v for v in data.values() if isinstance(v, list)), [])
+                    # Logic to find the list of cards
+                    page_items = []
+                    if isinstance(data, list):
+                        page_items = data
+                    else:
+                        # Card Ladder usually wraps the list in a key
+                        for key in ['results', 'cards', 'items', 'data']:
+                            if key in data and isinstance(data[key], list):
+                                page_items = data[key]
+                                break
+                        # If still not found, take the first list found
+                        if not page_items:
+                            page_items = next((v for v in data.values() if isinstance(v, list)), [])
                     
                     if not page_items:
                         has_more = False
                     else:
                         all_results.extend(page_items)
-                        # If we got less than the limit, there are no more pages
+                        # If we got fewer than 20 items, we are at the end
                         if len(page_items) < limit:
                             has_more = False
                         else:
-                            page += 1
-                            time.sleep(0.3) # Avoid triggering firewalls
-                elif response.status_code == 429:
-                    status_msg.warning("Rate limited! Waiting 5 seconds...")
-                    time.sleep(5)
+                            current_page += 1
+                            time.sleep(0.4) # Ethical delay
+                
+                elif response.status_code == 304:
+                    # If it still hits a cache, we must stop or we loop forever
+                    status_ui.warning("Server returned cached data (304). Stopping to prevent loop.")
+                    has_more = False
                 else:
                     st.error(f"Error {response.status_code}: {response.text}")
-                    break
+                    has_more = False
+                    
             except Exception as e:
-                st.error(f"Connection failed: {e}")
-                break
+                st.error(f"Request failed: {e}")
+                has_more = False
         
         st.session_state.full_data = all_results
-        status_msg.success(f"✅ Scrape Complete! Found {len(all_results)} total items.")
+        status_ui.success(f"✅ Success! Total cards scraped: {len(all_results)}")
         progress_bar.progress(100)
 
-# 3. Results Display (Always visible if data exists)
+# --- 3. Display Results ---
 if st.session_state.full_data:
     st.divider()
     df = pd.json_normalize(st.session_state.full_data)
     
-    # Dashboard Header
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Cards", len(df))
-    m2.metric("Unique Players", len(df['player'].unique()) if 'player' in df.columns else "N/A")
-    m3.metric("Last Scraped", datetime.now().strftime("%H:%M:%S"))
-
-    # Download Buttons
-    dl1, dl2 = st.columns(2)
+    # Download Options
+    c1, c2 = st.columns(2)
     csv = df.to_csv(index=False).encode('utf-8')
-    dl1.download_button("📥 Download CSV", data=csv, file_name=f"cards_{coll_id}.csv", use_container_width=True)
+    c1.download_button("📥 Download CSV", data=csv, file_name=f"collection_{coll_id}.csv", use_container_width=True)
     
-    json_str = json.dumps(st.session_state.full_data, indent=2)
-    dl2.download_button("📥 Download JSON", data=json_str, file_name=f"cards_{coll_id}.json", use_container_width=True)
+    json_bytes = json.dumps(st.session_state.full_data, indent=2).encode('utf-8')
+    c2.download_button("📥 Download JSON", data=json_bytes, file_name=f"collection_{coll_id}.json", use_container_width=True)
 
-    # Preview Table
+    # Data Table
     st.subheader("Data Preview")
     st.dataframe(df, use_container_width=True)
