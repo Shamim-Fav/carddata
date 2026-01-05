@@ -70,7 +70,7 @@ with st.sidebar:
             total_value = st.session_state.df['value'].astype(float).sum()
             st.metric("Total Value", f"${total_value:,.2f}")
 
-# Main content tabs
+# Main content - ONLY 3 TABS
 if st.session_state.df is not None:
     tab1, tab2, tab3 = st.tabs(["📊 Analytics", "💾 Export Data", "⚙️ Settings"])
     
