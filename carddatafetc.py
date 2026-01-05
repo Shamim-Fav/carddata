@@ -7,7 +7,7 @@ import io
 from datetime import datetime
 
 # --- Page Config ---
-st.set_page_config(page_title="Card Ladder Full Scraper", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Card Ladder Full Scraper", page_icon="📦")
 
 # Initialize session state
 if 'full_data' not in st.session_state:
