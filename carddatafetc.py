@@ -4,12 +4,11 @@ import json
 import time
 import pandas as pd
 from datetime import datetime
-from io import BytesIO
 
 # --- Page Config ---
 st.set_page_config(page_title="Card Ladder Fetcher", page_icon="📦", layout="wide")
 
-# --- Session State Initialization ---
+# --- Session State ---
 if 'auth_token' not in st.session_state:
     st.session_state.auth_token = None
 if 'all_results' not in st.session_state:
@@ -24,131 +23,106 @@ def create_headers(token):
         'authorization': token
     }
 
-def fetch_data(collection_id, query, sort_by, sort_dir, limit=20):
-    headers = create_headers(st.session_state.auth_token)
-    base_url = 'https://search-zzvl7ri3bq-uc.a.run.app/search'
-    
-    all_cards = []
-    page = 1
-    has_more = True
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    while has_more:
-        status_text.text(f"Fetching page {page}...")
-        params = {
-            'index': 'collectioncards',
-            'query': query,
-            'limit': limit,
-            'filters': f'collectionId:{collection_id}|hasQuantityAvailable:true',
-            'sort': sort_by,
-            'direction': sort_dir,
-            'page': page
-        }
-        
-        try:
-            response = requests.get(base_url, headers=headers, params=params, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Dynamic key finding (similar to your original script)
-                results = []
-                for key, value in data.items():
-                    if isinstance(value, list):
-                        results = value
-                        break
-                
-                if results:
-                    all_cards.extend(results)
-                    if len(results) < limit:
-                        has_more = False
-                    else:
-                        page += 1
-                        time.sleep(0.3)
-                else:
-                    has_more = False
-            elif response.status_code == 429:
-                status_text.warning("Rate limited. Waiting 5 seconds...")
-                time.sleep(5)
-            else:
-                st.error(f"Error {response.status_code}: {response.text}")
-                break
-        except Exception as e:
-            st.error(f"Connection error: {e}")
-            break
-            
-    progress_bar.empty()
-    status_text.success(f"Finished! Total cards found: {len(all_cards)}")
-    return all_cards
-
 # --- Sidebar: Authentication ---
 with st.sidebar:
-    st.title("🔐 Authentication")
-    token_input = st.text_area("Paste Bearer Token:", height=150, help="Starts with 'Bearer eyJ...'")
+    st.header("🔐 Authentication")
+    token_input = st.text_area("Paste Bearer Token:", height=150)
     
-    if st.button("Save Token"):
+    if st.button("Apply Token"):
         if token_input:
-            if not token_input.startswith("Bearer "):
-                st.session_state.auth_token = f"Bearer {token_input}"
-            else:
-                st.session_state.auth_token = token_input
-            st.success("Token Saved!")
-        else:
-            st.error("Please enter a token.")
-
+            st.session_state.auth_token = token_input if token_input.startswith("Bearer ") else f"Bearer {token_input}"
+            st.success("Token Active")
+    
     st.markdown("---")
-    st.markdown("### 📋 Instructions")
-    st.caption("1. Login to app.cardladder.com")
-    st.caption("2. Open DevTools (F12) > Network")
-    st.caption("3. Filter for 'search'")
-    st.caption("4. Copy 'authorization' header value")
+    st.markdown("### 📋 Quick Help")
+    st.caption("1. Login to Card Ladder")
+    st.caption("2. F12 > Network > Search for 'search'")
+    st.caption("3. Copy the 'authorization' header")
 
-# --- Main UI ---
-st.title("📦 Card Ladder Collection Fetcher")
+# --- Main Page ---
+st.title("📦 Card Ladder Collection Manager")
 
 if not st.session_state.auth_token:
-    st.info("Please enter your Bearer Token in the sidebar to begin.")
+    st.warning("Please enter your Bearer Token in the sidebar to start.")
 else:
-    # Input Layout
-    col1, col2 = st.columns(2)
-    with col1:
-        collection_id = st.text_input("Collection ID:", value="9Kr6jcPHdz77FNU9TVS4")
-        query = st.text_input("Search Query (optional):", value="")
-    with col2:
-        sort_by = st.selectbox("Sort By:", ['dateAdded', 'name', 'player', 'year', 'grade', 'value'])
-        sort_dir = st.radio("Direction:", ['desc', 'asc'], horizontal=True)
+    # 1. Input Section
+    with st.container():
+        st.subheader("Filter & Sort Settings")
+        col1, col2, col3 = st.columns([2, 2, 1])
+        
+        with col1:
+            collection_id = st.text_input("Collection ID", value="9Kr6jcPHdz77FNU9TVS4")
+            query = st.text_input("Search Query (Optional)")
+        with col2:
+            sort_by = st.selectbox("Sort By", ['dateAdded', 'name', 'player', 'year', 'grade', 'value'])
+            sort_dir = st.radio("Order", ['desc', 'asc'], horizontal=True)
+        with col3:
+            st.write(" ") # Alignment spacer
+            st.write(" ")
+            fetch_btn = st.button("🚀 Start Fetch", use_container_width=True)
 
-    if st.button("🚀 Start Fetching Collection", use_container_width=True):
-        st.session_state.all_results = fetch_data(collection_id, query, sort_by, sort_dir)
+    # 2. Execution Logic
+    if fetch_btn:
+        headers = create_headers(st.session_state.auth_token)
+        all_cards = []
+        page = 1
+        limit = 20
+        
+        progress_text = st.empty()
+        bar = st.progress(0)
+        
+        while True:
+            progress_text.text(f"Fetching page {page}...")
+            params = {
+                'index': 'collectioncards', 'query': query, 'limit': limit,
+                'filters': f'collectionId:{collection_id}|hasQuantityAvailable:true',
+                'sort': sort_by, 'direction': sort_dir, 'page': page
+            }
+            
+            try:
+                res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params)
+                if res.status_code == 200:
+                    data = res.json()
+                    # Find list in response
+                    results = next((v for v in data.values() if isinstance(v, list)), [])
+                    
+                    if not results: break
+                    all_cards.extend(results)
+                    
+                    if len(results) < limit: break
+                    page += 1
+                    time.sleep(0.2)
+                else:
+                    st.error(f"Error {res.status_code}")
+                    break
+            except Exception as e:
+                st.error(f"Failed: {e}")
+                break
+        
+        st.session_state.all_results = all_cards
+        progress_text.success(f"Done! Found {len(all_cards)} items.")
+        bar.empty()
 
-    # --- Results Handling ---
+    # 3. Results Section (Only shows if data exists)
     if st.session_state.all_results:
+        st.markdown("---")
         df = pd.json_normalize(st.session_state.all_results)
         
-        st.markdown("---")
-        st.subheader("📊 Collection Summary")
+        # Top Row: Stats & Downloads
+        stat1, stat2, dl1, dl2 = st.columns([1, 1, 1, 1])
+        stat1.metric("Total Items", len(df))
+        stat2.metric("Unique Players", len(df['player'].unique()) if 'player' in df.columns else "N/A")
         
-        # Stats
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Cards", len(df))
-        if 'grade' in df.columns:
-            m2.metric("Unique Grades", len(df['grade'].unique()))
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        dl1.download_button("📥 Download CSV", data=csv_data, file_name="collection.csv", use_container_width=True)
         
-        # Download Buttons
-        d1, d2 = st.columns(2)
-        
-        csv = df.to_csv(index=False).encode('utf-8')
-        d1.download_button("📥 Download CSV", data=csv, file_name=f"collection_{collection_id}.csv", mime="text/csv", use_container_width=True)
-        
-        json_str = json.dumps(st.session_state.all_results, indent=2)
-        d2.download_button("📥 Download JSON", data=json_str, file_name=f"collection_{collection_id}.json", mime="application/json", use_container_width=True)
+        json_data = json.dumps(st.session_state.all_results, indent=2)
+        dl2.download_button("📥 Download JSON", data=json_data, file_name="collection.json", use_container_width=True)
 
-        # Data Preview
-        st.subheader("👀 Data Preview")
+        # Bottom Row: Preview & Simple Chart
+        st.subheader("Data Preview")
         st.dataframe(df, use_container_width=True)
-
-        # Grade Distribution Chart
+        
         if 'grade' in df.columns:
-            st.subheader("📈 Grade Distribution")
+            st.subheader("Grade Distribution")
             st.bar_chart(df['grade'].value_counts())
