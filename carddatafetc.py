@@ -5,7 +5,6 @@ import json
 import time
 from datetime import datetime
 from io import BytesIO
-import base64
 
 # Page configuration
 st.set_page_config(
@@ -23,96 +22,92 @@ if 'auth_token' not in st.session_state:
     st.session_state.auth_token = ""
 
 # Title
-st.title("📊 Card Ladder Collection Fetcher")
+st.title("🚀 Card Ladder Collection Fetcher")
 
-# Main container - ONE TAB
-tab1 = st.container()
+# Main layout - NO TABS
+col1, col2 = st.columns([1, 2])
 
-with tab1:
-    # Split into two columns
-    col1, col2 = st.columns([1, 2])
+with col1:
+    # Authentication section
+    st.subheader("🔐 Authentication")
+    auth_token = st.text_area(
+        "Bearer Token",
+        value=st.session_state.auth_token,
+        height=100,
+        placeholder="Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImEzOGVhNmEwNDA4YjBjYzVkYTE4OWRmYzg4ODgyZDBmMWI3ZmJmMGUiLCJ0eXAiOiJKV1QifQ...",
+        help="Get from Card Ladder DevTools"
+    )
     
-    with col1:
-        # Authentication section
-        st.subheader("🔐 Authentication")
-        auth_token = st.text_area(
-            "Bearer Token",
-            value=st.session_state.auth_token,
-            height=100,
-            placeholder="Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImEzOGVhNmEwNDA4YjBjYzVkYTE4OWRmYzg4ODgyZDBmMWI3ZmJmMGUiLCJ0eXAiOiJKV1QifQ...",
-            help="Get from Card Ladder DevTools"
-        )
-        
-        if st.button("Save Token"):
-            if auth_token and auth_token.startswith('Bearer '):
-                st.session_state.auth_token = auth_token
-                st.success("Token saved!")
-            else:
-                st.error("Token must start with 'Bearer '")
-        
-        st.divider()
-        
-        # Fetch parameters
-        st.subheader("⚙️ Fetch Parameters")
-        collection_id = st.text_input(
-            "Collection ID",
-            value="9Kr6jcPHdz77FNU9TVS4",
-            help="Find in your collection URL"
-        )
-        
-        query = st.text_input(
-            "Search Query (Optional)",
-            placeholder="e.g., Mike Trout, PSA 10"
-        )
-        
-        limit = st.selectbox(
-            "Cards per page",
-            options=[20, 50, 100],
-            index=0
-        )
-        
-        # Fetch buttons
-        col_fetch1, col_fetch2 = st.columns(2)
-        with col_fetch1:
-            if st.button("🔍 Test Connection", use_container_width=True):
-                if st.session_state.auth_token:
-                    with st.spinner("Testing..."):
-                        headers = {
-                            'authorization': st.session_state.auth_token,
-                            'accept': 'application/json'
-                        }
-                        params = {
-                            'index': 'collectioncards',
-                            'limit': 5,
-                            'filters': f'collectionId:{collection_id}',
-                            'page': 1
-                        }
-                        try:
-                            response = requests.get(
-                                'https://search-zzvl7ri3bq-uc.a.run.app/search',
-                                headers=headers,
-                                params=params,
-                                timeout=10
-                            )
-                            if response.status_code == 200:
-                                st.success("✅ Connection successful!")
-                            else:
-                                st.error(f"Connection failed: {response.status_code}")
-                        except:
-                            st.error("Connection failed")
-                else:
-                    st.error("Please save token first")
-        
-        with col_fetch2:
-            fetch_button = st.button("🚀 Fetch Collection", type="primary", use_container_width=True)
+    if st.button("Save Token", use_container_width=True):
+        if auth_token and auth_token.startswith('Bearer '):
+            st.session_state.auth_token = auth_token
+            st.success("✅ Token saved!")
+        else:
+            st.error("❌ Token must start with 'Bearer '")
     
-    with col2:
-        # Results and download section
-        st.subheader("📊 Results & Download")
-        
-        if fetch_button and st.session_state.auth_token:
+    st.divider()
+    
+    # Fetch parameters
+    st.subheader("⚙️ Fetch Parameters")
+    collection_id = st.text_input(
+        "Collection ID",
+        value="9Kr6jcPHdz77FNU9TVS4",
+        help="Find in your collection URL"
+    )
+    
+    query = st.text_input(
+        "Search Query (Optional)",
+        placeholder="e.g., Mike Trout, PSA 10"
+    )
+    
+    limit = st.selectbox(
+        "Cards per page",
+        options=[20, 50, 100],
+        index=0
+    )
+    
+    # Fetch buttons
+    if st.button("🔍 Test Connection", use_container_width=True):
+        if st.session_state.auth_token:
+            with st.spinner("Testing connection..."):
+                headers = {
+                    'authorization': st.session_state.auth_token,
+                    'accept': 'application/json'
+                }
+                params = {
+                    'index': 'collectioncards',
+                    'limit': 5,
+                    'filters': f'collectionId:{collection_id}',
+                    'page': 1
+                }
+                try:
+                    response = requests.get(
+                        'https://search-zzvl7ri3bq-uc.a.run.app/search',
+                        headers=headers,
+                        params=params,
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        st.success("✅ Connection successful!")
+                    else:
+                        st.error(f"❌ Connection failed: {response.status_code}")
+                except Exception as e:
+                    st.error(f"❌ Connection error: {e}")
+        else:
+            st.error("❌ Please save token first")
+    
+    if st.button("🚀 Fetch Collection", type="primary", use_container_width=True):
+        st.session_state.fetch_triggered = True
+
+with col2:
+    # Results and download section
+    st.subheader("📊 Results")
+    
+    # Handle fetch if triggered
+    if 'fetch_triggered' in st.session_state and st.session_state.fetch_triggered:
+        if st.session_state.auth_token:
             # Fetch collection
-            with st.spinner("Fetching collection..."):
+            with st.spinner("Fetching collection data..."):
                 headers = {
                     'authorization': st.session_state.auth_token,
                     'accept': 'application/json'
@@ -124,7 +119,7 @@ with tab1:
                 status_text = st.empty()
                 
                 while True:
-                    status_text.text(f"Fetching page {page}...")
+                    status_text.text(f"📄 Fetching page {page}...")
                     
                     params = {
                         'index': 'collectioncards',
@@ -163,7 +158,7 @@ with tab1:
                             
                             if results:
                                 all_results.extend(results)
-                                progress = min(100, (page * 10))
+                                progress = min(100, (page * 20))
                                 progress_bar.progress(progress)
                                 
                                 if len(results) < limit:
@@ -173,16 +168,16 @@ with tab1:
                             else:
                                 break
                         else:
-                            st.error(f"Error: {response.status_code}")
+                            st.error(f"❌ Error {response.status_code}")
                             break
                             
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"❌ Error: {e}")
                         break
                 
                 progress_bar.progress(100)
                 status_text.text(f"✅ Fetched {len(all_results)} cards!")
-                time.sleep(0.5)
+                time.sleep(1)
                 progress_bar.empty()
                 status_text.empty()
                 
@@ -205,29 +200,43 @@ with tab1:
                         flat_data.append(flat_card)
                     
                     st.session_state.df_cards = pd.DataFrame(flat_data)
+                    st.success(f"✅ Successfully fetched {len(all_results)} cards!")
         
-        # Show results if available
-        if st.session_state.df_cards is not None:
-            df = st.session_state.df_cards
-            
-            # Stats
+        # Reset trigger
+        st.session_state.fetch_triggered = False
+    
+    # Show results if available
+    if st.session_state.df_cards is not None:
+        df = st.session_state.df_cards
+        
+        # Stats
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        with col_stat1:
             st.metric("Total Cards", len(df))
-            
+        with col_stat2:
             if 'value' in df.columns:
                 try:
                     df['value'] = pd.to_numeric(df['value'], errors='coerce')
                     total_value = df['value'].sum()
                     st.metric("Total Value", f"${total_value:,.2f}")
                 except:
-                    pass
-            
-            # Download section
-            st.divider()
-            st.subheader("💾 Download Options")
-            
-            # Create timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
+                    st.metric("Total Value", "N/A")
+        with col_stat3:
+            if 'grade' in df.columns:
+                st.metric("Unique Grades", df['grade'].nunique())
+        
+        st.divider()
+        
+        # Download section
+        st.subheader("💾 Download Options")
+        
+        # Create timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Download buttons in columns
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        
+        with dl_col1:
             # CSV Download
             csv_data = df.to_csv(index=False).encode('utf-8')
             st.download_button(
@@ -237,7 +246,8 @@ with tab1:
                 mime="text/csv",
                 use_container_width=True
             )
-            
+        
+        with dl_col2:
             # Excel Download
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -251,47 +261,59 @@ with tab1:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
-            
+        
+        with dl_col3:
             # JSON Download
-            json_data = json.dumps({
-                'metadata': {
-                    'total_cards': len(df),
-                    'timestamp': timestamp,
-                    'collection_id': collection_id
-                },
-                'cards': st.session_state.cards_data
-            }, indent=2).encode('utf-8')
-            
-            st.download_button(
-                label="📄 Download JSON",
-                data=json_data,
-                file_name=f"cardladder_{timestamp}.json",
-                mime="application/json",
-                use_container_width=True
-            )
-            
-            # Data preview
-            st.divider()
-            st.subheader("📋 Data Preview")
-            st.dataframe(df.head(20), use_container_width=True)
+            if st.session_state.cards_data:
+                json_data = json.dumps({
+                    'metadata': {
+                        'total_cards': len(df),
+                        'timestamp': timestamp,
+                        'collection_id': collection_id
+                    },
+                    'cards': st.session_state.cards_data
+                }, indent=2).encode('utf-8')
+                
+                st.download_button(
+                    label="📄 Download JSON",
+                    data=json_data,
+                    file_name=f"cardladder_{timestamp}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+        
+        # Data preview
+        st.divider()
+        st.subheader("📋 Data Preview")
+        st.dataframe(df.head(20), use_container_width=True)
         
         # Clear button
-        if st.session_state.df_cards is not None:
-            if st.button("🗑️ Clear Results", type="secondary"):
-                st.session_state.cards_data = None
-                st.session_state.df_cards = None
-                st.rerun()
+        if st.button("🗑️ Clear Results", type="secondary", use_container_width=True):
+            st.session_state.cards_data = None
+            st.session_state.df_cards = None
+            st.rerun()
+    
+    else:
+        # Show empty state
+        st.info("👈 Enter your token and fetch parameters on the left, then click 'Fetch Collection'")
 
 # Instructions in sidebar
 with st.sidebar:
-    st.header("📋 How to Get Token")
+    st.header("📋 Instructions")
     st.markdown("""
+    ### How to get your token:
     1. Login to [Card Ladder](https://app.cardladder.com)
     2. Open DevTools (F12)
     3. Go to Network tab
-    4. Refresh page
-    5. Find request to:
+    4. Refresh the page
+    5. Find any request to:
        `search-zzvl7ri3bq-uc.a.run.app/search`
-    6. Copy `authorization` header
-    7. Paste in Bearer Token field
+    6. Click on that request
+    7. In Headers tab, find 'authorization' header
+    8. Copy the ENTIRE value
+    
+    ### Default Collection ID:
+    `9Kr6jcPHdz77FNU9TVS4`
+    
+    You can find your own Collection ID in your collection URL.
     """)
