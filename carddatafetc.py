@@ -6,110 +6,115 @@ import pandas as pd
 import io
 from datetime import datetime
 
-# --- Page Config ---
-st.set_page_config(page_title="Card Ladder Full Scraper", page_icon="📦")
+# --- Page Setup ---
+st.set_page_config(page_title="Card Ladder Scraper", page_icon="🃏", layout="wide")
 
-# Initialize session state
 if 'full_data' not in st.session_state:
     st.session_state.full_data = []
 
-# --- Main UI ---
-st.title("📦 Card Ladder Full Collection Scraper")
+st.title("🃏 Card Ladder Collection Scraper")
 
+# --- Sidebar: Auth ---
 with st.sidebar:
     st.header("🔐 Authentication")
     token_input = st.text_area("Paste Bearer Token:", height=150)
-    if st.button("🗑️ Clear Data"):
+    st.caption("Tip: Copy the 'authorization' value from the Network tab in your browser.")
+    if st.button("🗑️ Reset App"):
         st.session_state.full_data = []
         st.rerun()
 
+# --- Main Inputs ---
 col1, col2 = st.columns([2, 1])
 with col1:
     coll_id = st.text_input("Collection ID", value="Gp4YlnON0enGVD2BBiAR")
 with col2:
     st.write(" ")
     st.write(" ")
-    run_scrape = st.button("🚀 Start Full Fetch")
+    run_scrape = st.button("🚀 Start Fetching 74/74")
 
+# --- Scraper Logic ---
 if run_scrape:
     if not token_input:
-        st.error("Please provide a token!")
+        st.error("Missing Token!")
     else:
         all_results = []
-        current_page = 0  
+        page = 0
         limit = 20
-        has_more = True
-        
         headers = {
             'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}",
             'accept': 'application/json',
             'user-agent': 'Mozilla/5.0',
-            'Cache-Control': 'no-cache'
         }
-
-        status_container = st.empty()
         
-        while has_more:
-            params = {'index': 'collectioncards', 'page': current_page, 'limit': limit, 
-                      'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true',
-                      'sort': 'dateAdded', 'direction': 'asc'}
+        status = st.empty()
+        bar = st.progress(0)
+        
+        while True:
+            params = {
+                'index': 'collectioncards',
+                'page': page,
+                'limit': limit,
+                'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true',
+                'sort': 'dateAdded',
+                'direction': 'asc'
+            }
             
-            try:
-                response = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    page_items = data.get('hits', [])
-                    total_hits = data.get('totalHits', 0)
-                    
-                    if not page_items:
-                        has_more = False
-                    else:
-                        all_results.extend(page_items)
-                        status_container.success(f"✅ Collected {len(all_results)} of {total_hits} items")
-                        if len(all_results) >= total_hits or len(page_items) < limit:
-                            has_more = False
-                        else:
-                            current_page += 1
-                            time.sleep(0.3)
-                else:
-                    st.error(f"Error {response.status_code}")
-                    break
-            except Exception as e:
-                st.error(f"Connection failed: {e}")
+            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params)
+            
+            if res.status_code == 200:
+                data = res.json()
+                hits = data.get('hits', [])
+                total = data.get('totalHits', 0)
+                
+                if not hits: break
+                
+                all_results.extend(hits)
+                progress = min(len(all_results) / total, 1.0) if total > 0 else 1.0
+                bar.progress(progress)
+                status.success(f"✅ Collected {len(all_results)} of {total}")
+                
+                if len(all_results) >= total or len(hits) < limit: break
+                page += 1
+                time.sleep(0.3)
+            else:
+                st.error(f"Error: {res.status_code}")
                 break
         
         st.session_state.full_data = all_results
 
-# --- Export Section ---
+# --- Results & Exports ---
 if st.session_state.full_data:
-    st.divider()
     df = pd.json_normalize(st.session_state.full_data)
     
-    st.subheader("📊 Export Results")
-    c1, c2, c3 = st.columns(3)
-    
-    # --- EXCEL DOWNLOAD (The part that was crashing) ---
+    # 📈 Dashboard Metrics
+    st.divider()
+    m1, m2, m3 = st.columns(3)
+    val = df['currentValue'].sum() if 'currentValue' in df.columns else 0
+    cost = df['investment'].sum() if 'investment' in df.columns else 0
+    m1.metric("Total Cards", len(df))
+    m2.metric("Market Value", f"${val:,.2f}")
+    m3.metric("Total Profit/Loss", f"${(val - cost):,.2f}", delta=f"{(((val-cost)/cost)*100 if cost > 0 else 0):.1f}%")
+
+    # 📥 Download Buttons
+    st.subheader("📥 Export Your Files")
+    d1, d2, d3 = st.columns(3)
+
+    # EXCEL FIX
     try:
-        output_excel = io.BytesIO()
-        # Explicitly using openpyxl
-        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Collection')
-        excel_data = output_excel.getvalue()
-        c1.download_button("📗 Download Excel (.xlsx)", data=excel_data, 
-                           file_name=f"cards_{coll_id}.xlsx", use_container_width=True)
-    except ModuleNotFoundError:
-        c1.error("❌ Install openpyxl to enable Excel export: `pip install openpyxl`")
-    except Exception as e:
-        c1.error(f"Excel Error: {e}")
+        d1.download_button("📗 Download Excel", data=excel_buffer.getvalue(), 
+                           file_name="collection.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+    except:
+        d1.error("Install openpyxl to enable Excel.")
 
-    # --- CSV & JSON ---
-    csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8')
-    c2.download_button("📊 Download CSV (.csv)", data=csv_data, 
-                       file_name=f"cards_{coll_id}.csv", use_container_width=True)
+    # CSV
+    csv = df.to_csv(index=False).encode('utf-8')
+    d2.download_button("📊 Download CSV", data=csv, file_name="collection.csv", use_container_width=True)
 
-    json_data = json.dumps(st.session_state.full_data, indent=2).encode('utf-8')
-    c3.download_button("💾 Download Raw JSON", data=json_data, 
-                       file_name=f"cards_{coll_id}.json", use_container_width=True)
+    # JSON
+    js = json.dumps(st.session_state.full_data, indent=2).encode('utf-8')
+    d3.download_button("💾 Download JSON", data=js, file_name="collection.json", use_container_width=True)
 
-    # Preview
     st.dataframe(df, use_container_width=True)
