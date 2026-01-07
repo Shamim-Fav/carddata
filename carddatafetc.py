@@ -35,7 +35,7 @@ with st.sidebar:
         st.rerun()
 
 # --- Main UI ---
-st.title("📦 Card Ladder Full Collection Scraper")
+st.title("📦 Card Data Scraper")
 st.info("This tool fetches every card in a collection and exports them to Excel, CSV, and JSON.")
 
 col1, col2 = st.columns([2, 1])
