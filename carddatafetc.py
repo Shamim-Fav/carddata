@@ -158,7 +158,7 @@ if st.button("🚀 Start Scrape"):
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
             'variation', 'player', 'currentValue', 'avg_last_3_sales', 
-            'total_sales_in_db', 'sale1_price', 'sale2_price', 'sale3_price'
+            'total_sales_in_db'
         ]
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
