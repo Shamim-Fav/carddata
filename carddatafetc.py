@@ -1,14 +1,11 @@
 import requests
 import json
 import time
-import queue
-import threading
 import pandas as pd
-import tkinter as tk
-import numpy as np
+import streamlit as st
 from datetime import datetime
-from tkinter import ttk, scrolledtext, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import io
 
 # ==================== GOOGLE SHEETS INTEGRATION ====================
 try:
@@ -17,7 +14,7 @@ try:
     GOOGLE_SHEETS_AVAILABLE = True
 except ImportError:
     GOOGLE_SHEETS_AVAILABLE = False
-    print("Google Sheets libraries not installed. Run: pip install gspread oauth2client")
+    st.warning("Google Sheets libraries not installed. Run: pip install gspread oauth2client")
 
 # ==================== HARDCODED CREDENTIALS (KEEP AS IS) ====================
 GOOGLE_CREDENTIALS = {
@@ -37,7 +34,36 @@ GOOGLE_CREDENTIALS = {
 # ==================== YOUR SPREADSHEET ID ====================
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
+# ==================== STREAMLIT PAGE CONFIG ====================
+st.set_page_config(
+    page_title="Card Ladder Scraper",
+    page_icon="📊",
+    layout="wide"
+)
 
+# ==================== SESSION STATE INITIALIZATION ====================
+if 'auth_token' not in st.session_state:
+    st.session_state.auth_token = None
+if 'collection_data' not in st.session_state:
+    st.session_state.collection_data = []
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
+if 'sales_success' not in st.session_state:
+    st.session_state.sales_success = 0
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+
+# ==================== HELPER FUNCTIONS ====================
+def add_log(msg):
+    """Add a log message to session state"""
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    st.session_state.logs.append(f"[{timestamp}] {msg}")
+
+def clear_logs():
+    """Clear all logs"""
+    st.session_state.logs = []
+
+# ==================== GOOGLE SHEETS MANAGER ====================
 class GoogleSheetsManager:
     def __init__(self, credentials_dict=None, spreadsheet_id=None):
         self.credentials_dict = credentials_dict or GOOGLE_CREDENTIALS
@@ -92,13 +118,12 @@ class GoogleSheetsManager:
             return None, f"Error accessing sheet: {str(e)}"
     
     def save_dataframe_to_sheet(self, spreadsheet, sheet_name, df, clear_existing=True):
-        """Save pandas DataFrame to Google Sheet - SIMPLE VERSION"""
+        """Save pandas DataFrame to Google Sheet"""
         try:
             # Create a clean DataFrame copy
             df_clean = df.copy()
             
-            # Convert all columns to string type (simplest approach)
-            # This handles arrays, lists, dicts, etc. just like Excel
+            # Convert all columns to string type
             for col in df_clean.columns:
                 # Replace NaN with None first
                 df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
@@ -134,339 +159,38 @@ class GoogleSheetsManager:
             
         except Exception as e:
             return False, f"Error saving to sheet: {str(e)}"
-    
-    def get_spreadsheet_url(self, spreadsheet):
-        """Get the URL of the spreadsheet"""
-        return spreadsheet.url
 
-# ==================== TOKEN INPUT GUI ====================
-class TokenInputGUI:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("Card Ladder - Bearer Token")
-        self.root.geometry("700x500")
-        self.root.configure(bg='#2b2b2b')
-        self.token = None
-        self.setup_ui()
-        
-    def setup_ui(self):
-        main_frame = tk.Frame(self.root, bg='#2b2b2b', padx=20, pady=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        tk.Label(main_frame, text="🔐 Card Ladder Authentication", font=('Segoe UI', 16, 'bold'), fg='#ffffff', bg='#2b2b2b').pack(pady=(0, 20))
-        
-        box = tk.Frame(main_frame, bg='#3c3c3c', padx=10, pady=10)
-        box.pack(fill=tk.X, pady=10)
-        tk.Label(box, text="Paste Bearer Token from DevTools:", fg='#00ff88', bg='#3c3c3c', font=('Segoe UI', 10, 'bold')).pack(anchor='w')
-        
-        self.token_text = scrolledtext.ScrolledText(main_frame, height=10, font=('Consolas', 9), bg='#1e1e1e', fg='#ffffff')
-        self.token_text.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        btn = tk.Button(main_frame, text="Next Step ➡️", command=self.submit, bg='#00aa55', fg='white', font=('Segoe UI', 11, 'bold'), padx=20, pady=10)
-        btn.pack(side=tk.RIGHT)
-
-    def submit(self):
-        t = self.token_text.get('1.0', tk.END).strip()
-        if t:
-            self.token = t if t.startswith('Bearer ') else f'Bearer {t}'
-            self.root.destroy()
-        else:
-            messagebox.showerror("Error", "Token is required")
-
-    def get_token(self):
-        self.root.mainloop()
-        return self.token
-
-# ==================== MAIN SCRAPER GUI ====================
-class CardLadderScraper:
-    def __init__(self, auth_token):
-        self.auth_token = auth_token
-        self.root = tk.Tk()
-        self.root.title("Card Ladder - Complete Scraper")
-        self.root.geometry("1000x800")
-        self.root.configure(bg='#2b2b2b')
-        
-        self.log_queue = queue.Queue()
-        self.max_workers = tk.IntVar(value=1)
-        
-        # Record selection variables
-        self.fetch_all = tk.BooleanVar(value=True)  # Default: Fetch all records
-        self.record_limit = tk.IntVar(value=50)     # Default limit when not fetching all
-        
-        # Phase control
-        self.phase1_complete = False
-        self.collection_data = []
-        
-        # Google Sheets - auto-enabled if credentials are available
-        self.google_sheets = None
-        self.spreadsheet = None
-        
-        # Check if Google Sheets credentials are available
-        if GOOGLE_SHEETS_AVAILABLE:
-            self.google_sheets = GoogleSheetsManager()
-            self.log("✅ Google Sheets library available")
-        
-        self.setup_ui()
-        self.update_logs()
-        
-    def setup_ui(self):
-        main = tk.Frame(self.root, bg='#2b2b2b', padx=20, pady=20)
-        main.pack(fill=tk.BOTH, expand=True)
-        
-        # Header
-        tk.Label(main, text="📦 Card Ladder Complete Scraper", font=('Segoe UI', 20, 'bold'), 
-                fg='#ffffff', bg='#2b2b2b').pack(pady=(0, 20))
-        
-        # ===== INPUT SECTION =====
-        input_frame = tk.LabelFrame(main, text=" Collection Settings ", font=('Segoe UI', 11, 'bold'),
-                                   bg='#3c3c3c', fg='#00ff88', padx=15, pady=15)
-        input_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        # Row 1: Collection ID
-        tk.Label(input_frame, text="Collection ID:", fg='white', bg='#3c3c3c', 
-                font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w', pady=5)
-        self.coll_id_var = tk.StringVar(value="zKC3o1sfYEcBGNaTPDRn")
-        tk.Entry(input_frame, textvariable=self.coll_id_var, width=40, 
-                font=('Segoe UI', 10)).grid(row=0, column=1, padx=10, sticky='w', pady=5)
-        
-        # Row 2: Record Selection
-        tk.Label(input_frame, text="Fetch Records:", fg='white', bg='#3c3c3c', 
-                font=('Segoe UI', 10)).grid(row=1, column=0, sticky='w', pady=5)
-        
-        # Create frame for record selection options
-        record_frame = tk.Frame(input_frame, bg='#3c3c3c')
-        record_frame.grid(row=1, column=1, sticky='w', pady=5)
-        
-        # All records radio button
-        self.all_radio = tk.Radiobutton(record_frame, text="All Records", variable=self.fetch_all, 
-                                       value=True, bg='#3c3c3c', fg='white',
-                                       selectcolor='#3c3c3c', font=('Segoe UI', 10),
-                                       command=self.toggle_record_selection)
-        self.all_radio.pack(side=tk.LEFT)
-        
-        # Specific number radio button
-        self.limit_radio = tk.Radiobutton(record_frame, text="Specific Number:", variable=self.fetch_all, 
-                                         value=False, bg='#3c3c3c', fg='white',
-                                         selectcolor='#3c3c3c', font=('Segoe UI', 10),
-                                         command=self.toggle_record_selection)
-        self.limit_radio.pack(side=tk.LEFT, padx=(20, 5))
-        
-        # Number entry for specific records
-        self.limit_entry = tk.Spinbox(record_frame, from_=1, to=10000, 
-                                     textvariable=self.record_limit, width=8,
-                                     font=('Segoe UI', 10), state='disabled')
-        self.limit_entry.pack(side=tk.LEFT)
-        
-        # Row 3: Max Threads
-        tk.Label(input_frame, text="Max Threads:", fg='white', bg='#3c3c3c', 
-                font=('Segoe UI', 10)).grid(row=2, column=0, sticky='w', pady=5)
-        tk.Spinbox(input_frame, from_=1, to=10, textvariable=self.max_workers, 
-                  width=10, font=('Segoe UI', 10)).grid(row=2, column=1, padx=10, sticky='w', pady=5)
-        
-        # ===== STATUS DISPLAY =====
-        status_frame = tk.Frame(main, bg='#2b2b2b')
-        status_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        self.status_label = tk.Label(status_frame, text="Ready to start...", 
-                                    fg='#00ff88', bg='#2b2b2b', font=('Segoe UI', 12))
-        self.status_label.pack(anchor='w')
-        
-        self.progress_label = tk.Label(status_frame, text="", fg='#cccccc', 
-                                      bg='#2b2b2b', font=('Segoe UI', 10))
-        self.progress_label.pack(anchor='w', pady=(5, 0))
-        
-        # Google Sheets status
-        if self.google_sheets:
-            self.google_status_label = tk.Label(status_frame, text="✅ Google Sheets ready", 
-                                              fg='#ff9900', bg='#2b2b2b', font=('Segoe UI', 10))
-            self.google_status_label.pack(anchor='w', pady=(5, 0))
-        
-        # ===== LOG DISPLAY =====
-        log_frame = tk.LabelFrame(main, text=" Processing Log ", font=('Segoe UI', 11, 'bold'),
-                                 bg='#3c3c3c', fg='#00ff88', padx=15, pady=15)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.log_widget = scrolledtext.ScrolledText(log_frame, height=20, 
-                                                   bg='#1e1e1e', fg='#00ff00', 
-                                                   font=('Consolas', 9))
-        self.log_widget.pack(fill=tk.BOTH, expand=True)
-        
-        # ===== CONTROL BUTTONS =====
-        btn_frame = tk.Frame(main, bg='#2b2b2b', pady=20)
-        btn_frame.pack(fill=tk.X)
-        
-        self.start_btn = tk.Button(btn_frame, text="🚀 START COMPLETE PROCESS", 
-                                  command=self.start_complete_process, 
-                                  bg='#007acc', fg='white', 
-                                  font=('Segoe UI', 12, 'bold'), padx=25, pady=10)
-        self.start_btn.pack(side=tk.RIGHT, padx=10)
-        
-        self.stop_btn = tk.Button(btn_frame, text="⏹️ Stop", command=self.stop_process,
-                                 bg='#cc0000', fg='white', font=('Segoe UI', 10), 
-                                 padx=20, pady=5, state='disabled')
-        self.stop_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Processing control
-        self.processing = False
-        
-    def toggle_record_selection(self):
-        """Enable/disable record limit entry based on selection"""
-        if self.fetch_all.get():
-            # Fetch all records - disable the limit entry
-            self.limit_entry.config(state='disabled')
-        else:
-            # Fetch specific number - enable the limit entry
-            self.limit_entry.config(state='normal')
+# ==================== SCRAPING FUNCTIONS ====================
+def fetch_collection(coll_id, auth_token, fetch_all=True, record_limit=50):
+    """Fetch cards from collection based on user selection"""
+    all_cards = []
+    page = 0
+    limit = 20
     
-    def log(self, msg):
-        self.log_queue.put(msg)
+    headers = {
+        'authorization': auth_token,
+        'accept': 'application/json',
+        'user-agent': 'Mozilla/5.0'
+    }
     
-    def update_logs(self):
-        try:
-            while True:
-                m = self.log_queue.get_nowait()
-                self.log_widget.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {m}\n")
-                self.log_widget.see(tk.END)
-        except queue.Empty:
-            pass
-        self.root.after(100, self.update_logs)
+    add_log(f"=== PHASE 1: Fetching Collection ===")
     
-    def update_status(self, message, color='#00ff88'):
-        self.status_label.config(text=message, fg=color)
+    if fetch_all:
+        add_log("📊 Mode: Fetching ALL records from collection")
+    else:
+        add_log(f"📊 Mode: Fetching up to {record_limit} records")
     
-    def update_progress(self, message):
-        self.progress_label.config(text=message)
-    
-    # ===== PHASE 1: FETCH COLLECTION =====
-    def fetch_collection(self):
-        """Phase 1: Fetch cards from collection based on user selection"""
-        cid = self.coll_id_var.get()
-        all_cards = []
-        page = 0
-        limit = 20
-        
-        # Get user's record selection
-        fetch_all_records = self.fetch_all.get()
-        record_limit = self.record_limit.get() if not fetch_all_records else None
-        
-        headers = {
-            'authorization': self.auth_token,
-            'accept': 'application/json',
-            'user-agent': 'Mozilla/5.0'
-        }
-        
-        self.log(f"=== PHASE 1: Fetching Collection ===")
-        
-        # Display user's selection
-        if fetch_all_records:
-            self.log("📊 Mode: Fetching ALL records from collection")
-            self.update_status("Phase 1: Fetching ALL collection records...", '#ff9900')
-        else:
-            self.log(f"📊 Mode: Fetching up to {record_limit} records")
-            self.update_status(f"Phase 1: Fetching {record_limit} records...", '#ff9900')
-        
-        try:
-            while True and self.processing:
-                self.log(f"Fetching page {page}...")
-                self.update_progress(f"Page {page}")
-                
-                params = {
-                    'index': 'collectioncards',
-                    'page': page,
-                    'limit': limit,
-                    'filters': f'collectionId:{cid}|hasQuantityAvailable:true',
-                    'sort': 'dateAdded',
-                    'direction': 'asc'
-                }
-                
-                response = requests.get(
-                    'https://search-zzvl7ri3bq-uc.a.run.app/search',
-                    headers=headers,
-                    params=params,
-                    timeout=15
-                )
-                
-                if response.status_code != 200:
-                    self.log(f"❌ Error: Server returned {response.status_code}")
-                    break
-                    
-                data = response.json()
-                hits = data.get('hits', [])
-                total = data.get('totalHits', 0)
-                
-                if not hits:
-                    break
-                    
-                all_cards.extend(hits)
-                self.log(f"✅ Page {page}: {len(hits)} cards (Total: {len(all_cards)}/{total})")
-                
-                # Check if we've reached the user's limit
-                if not fetch_all_records and len(all_cards) >= record_limit:
-                    all_cards = all_cards[:record_limit]
-                    self.log(f"📊 Reached user limit of {record_limit} cards")
-                    break
-                
-                if fetch_all_records and (len(all_cards) >= total or len(hits) < limit):
-                    break
-                    
-                page += 1
-                time.sleep(0.3)
+    try:
+        while True and not st.session_state.get('stop_processing', False):
+            add_log(f"Fetching page {page}...")
             
-            if all_cards:
-                self.collection_data = all_cards
-                self.phase1_complete = True
-                
-                # Log the final count
-                if fetch_all_records:
-                    self.log(f"✅ PHASE 1 COMPLETE: Collected ALL {len(all_cards)} cards from collection")
-                else:
-                    self.log(f"✅ PHASE 1 COMPLETE: Collected {len(all_cards)} cards (User limit: {record_limit})")
-                
-                self.update_status(f"Phase 1 Complete: {len(all_cards)} cards", '#00ff88')
-                return True
-            else:
-                self.log("⚠️ No cards found in collection")
-                self.update_status("No cards found", '#ff4444')
-                return False
-                
-        except Exception as e:
-            self.log(f"❌ Phase 1 Error: {str(e)}")
-            self.update_status("Phase 1 Failed", '#ff4444')
-            return False
-    
-    # ===== PHASE 2: FETCH SALES DATA =====
-    def fetch_sales_for_card(self, card_data):
-        """Phase 2: Fetch last 3 sales for a single card"""
-        try:
-            headers = {
-                'authorization': self.auth_token,
-                'accept': 'application/json',
-                'user-agent': 'Mozilla/5.0'
-            }
-            
-            # Use label field for search (exact match)
-            label = card_data.get('label', '')
-            player = card_data.get('player', 'N/A')
-            
-            if not label:
-                # Build label from components if not available
-                year = card_data.get('year', '')
-                number = card_data.get('number', '')
-                condition = card_data.get('condition', '')
-                card_set = card_data.get('set', '')
-                player = card_data.get('player', '')
-                
-                label = f"{year} {card_set} {player} #{number} {condition}"
-            
-            # Search sales archive using label
             params = {
-                'index': 'salesarchive',
-                'query': label,
-                'page': 0,
-                'limit': 20,
-                'filters': '',
-                'sort': 'date',
-                'direction': 'desc'
+                'index': 'collectioncards',
+                'page': page,
+                'limit': limit,
+                'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true',
+                'sort': 'dateAdded',
+                'direction': 'asc'
             }
             
             response = requests.get(
@@ -476,399 +200,440 @@ class CardLadderScraper:
                 timeout=15
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                hits = data.get('hits', [])
-                total = data.get('totalHits', 0)
+            if response.status_code != 200:
+                add_log(f"❌ Error: Server returned {response.status_code}")
+                break
                 
-                # Prepare sales data
-                sales_info = {
-                    'sales_search_query': label,
-                    'total_sales_in_db': total,
-                    'sales_found': len(hits)
-                }
+            data = response.json()
+            hits = data.get('hits', [])
+            total = data.get('totalHits', 0)
+            
+            if not hits:
+                break
                 
-                # Get last 3 sales
-                last_three = hits[:3]
+            all_cards.extend(hits)
+            add_log(f"✅ Page {page}: {len(hits)} cards (Total: {len(all_cards)}/{total})")
+            
+            # Check if we've reached the user's limit
+            if not fetch_all and len(all_cards) >= record_limit:
+                all_cards = all_cards[:record_limit]
+                add_log(f"📊 Reached user limit of {record_limit} cards")
+                break
+            
+            if fetch_all and (len(all_cards) >= total or len(hits) < limit):
+                break
                 
-                # Collect prices for average calculation
-                sale_prices = []
-                
-                for i, sale in enumerate(last_three, 1):
-                    price = sale.get('price')
-                    date = sale.get('date', '')
-                    listing_type = sale.get('listingType', '')
-                    
-                    # Collect price for average calculation
-                    if price is not None:
-                        sale_prices.append(price)
-                    
-                    # Format date
-                    if date and 'T' in date:
-                        try:
-                            dt = datetime.fromisoformat(date.replace('Z', '+00:00'))
-                            date = dt.strftime('%Y-%m-%d')
-                        except:
-                            pass
-                    
-                    sales_info[f'sale{i}_price'] = price
-                    sales_info[f'sale{i}_date'] = date
-                    sales_info[f'sale{i}_listingType'] = listing_type
-                
-                # Fill empty slots if less than 3 sales
-                for i in range(len(last_three) + 1, 4):
-                    sales_info[f'sale{i}_price'] = None
-                    sales_info[f'sale{i}_date'] = None
-                    sales_info[f'sale{i}_listingType'] = None
-                
-                # Calculate average of last 3 sales (only for non-None prices)
-                if sale_prices:
-                    sales_info['avg_last_3_sales'] = round(sum(sale_prices) / len(sale_prices), 2)
-                    sales_info['sales_count_for_avg'] = len(sale_prices)
-                else:
-                    sales_info['avg_last_3_sales'] = None
-                    sales_info['sales_count_for_avg'] = 0
-                
-                return sales_info
+            page += 1
+            time.sleep(0.3)
+        
+        if all_cards:
+            if fetch_all:
+                add_log(f"✅ PHASE 1 COMPLETE: Collected ALL {len(all_cards)} cards from collection")
             else:
-                return None
-                
-        except Exception as e:
-            return None
-    
-    def fetch_sales_for_all_cards(self):
-        """Phase 2: Fetch sales for all collected cards"""
-        if not self.collection_data:
-            self.log("❌ No collection data to process")
-            return 0
-        
-        self.log(f"\n=== PHASE 2: Fetching Last 3 Sales ===")
-        self.update_status("Phase 2: Fetching sales data...", '#ff9900')
-        
-        total_cards = len(self.collection_data)
-        sales_success = 0
-        
-        with ThreadPoolExecutor(max_workers=self.max_workers.get()) as executor:
-            futures = []
-            for idx, card in enumerate(self.collection_data, 1):
-                if not self.processing:
-                    break
-                
-                futures.append((executor.submit(self.fetch_sales_for_card, card), card, idx))
+                add_log(f"✅ PHASE 1 COMPLETE: Collected {len(all_cards)} cards (User limit: {record_limit})")
             
-            # Process results as they complete
-            completed = 0
-            for future, card, idx in futures:
-                if not self.processing:
-                    break
-                
-                completed += 1
-                result = future.result()
-                
-                if result:
-                    # Merge sales data into card
-                    card.update(result)
-                    sales_success += 1
-                    
-                    player = card.get('player', f'Card {idx}')
-                    sales_found = result.get('sales_found', 0)
-                    avg_price = result.get('avg_last_3_sales')
-                    
-                    if sales_found > 0:
-                        prices = []
-                        for i in range(1, 4):
-                            price = result.get(f'sale{i}_price')
-                            listing_type = result.get(f'sale{i}_listingType', '')
-                            if price:
-                                price_str = f"${price}"
-                                if listing_type:
-                                    price_str += f" ({listing_type})"
-                                prices.append(price_str)
-                        
-                        if prices:
-                            avg_str = f", Avg: ${avg_price:.2f}" if avg_price else ""
-                            self.log(f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales{avg_str} - {', '.join(prices)}")
-                        else:
-                            self.log(f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales")
-                    else:
-                        self.log(f"⚠️ [{idx}/{total_cards}] {player}: No sales found")
-                else:
-                    player = card.get('player', f'Card {idx}')
-                    self.log(f"❌ [{idx}/{total_cards}] {player}: Failed to fetch sales")
-                
-                # Update progress
-                if completed % 2 == 0 or completed == total_cards:
-                    percent = (completed / total_cards) * 100
-                    self.update_progress(f"Phase 2: {completed}/{total_cards} cards ({percent:.1f}%)")
-                
-                # Rate limiting
-                time.sleep(0.2)
-        
-        return sales_success
-    
-    # ===== MAIN PROCESS CONTROL =====
-    def start_complete_process(self):
-        """Start the complete two-phase process"""
-        self.processing = True
-        self.start_btn.config(state='disabled')
-        self.stop_btn.config(state='normal')
-        
-        # Clear previous data
-        self.collection_data = []
-        self.phase1_complete = False
-        
-        # Start processing in separate thread
-        threading.Thread(target=self.run_complete_process, daemon=True).start()
-    
-    def run_complete_process(self):
-        """Run both phases sequentially"""
-        try:
-            # Phase 1: Fetch collection
-            phase1_success = self.fetch_collection()
+            return True, all_cards
+        else:
+            add_log("⚠️ No cards found in collection")
+            return False, []
             
-            if not phase1_success or not self.processing:
-                self.finish_processing()
-                return
-            
-            # Phase 2: Fetch sales data
-            sales_success = self.fetch_sales_for_all_cards()
-            
-            # Save results
-            if self.collection_data and self.processing:
-                self.save_results(sales_success)
-            
-        except Exception as e:
-            self.log(f"❌ Process Error: {str(e)}")
-        finally:
-            self.finish_processing()
-    
-    def save_results(self, sales_success):
-        """Save all data to files - TWO Excel files and Google Sheets"""
-        try:
-            # Get current date for filename and scrape date column
-            current_date = datetime.now()
-            scrape_date_filename = current_date.strftime("%Y-%b-%d")  # 2026-Jan-08 format for filename
-            scrape_date_display = current_date.strftime("%Y-%m-%d")  # For the column
-            
-            cid = self.coll_id_var.get().replace(':', '_')
-            
-            # Determine mode for display
-            if self.fetch_all.get():
-                mode = "ALL_RECORDS"
-            else:
-                mode = f"LIMIT_{self.record_limit.get()}"
-            
-            # Create DataFrames with "Scrape Date" column
-            df = pd.json_normalize(self.collection_data)
-            
-            # Add "Scrape Date" column at the beginning
-            df.insert(0, 'Scrape Date', scrape_date_display)
-            
-            # Add "Card Unique URL" column as the second column
-            if 'collectionCardId' in df.columns:
-                df.insert(1, 'Card Unique URL', df['collectionCardId'].apply(
-                    lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true&backTo=Collection" 
-                    if pd.notna(x) else None
-                ))
-            else:
-                df.insert(1, 'Card Unique URL', None)
-                self.log("⚠️ 'collectionCardId' column not found - Card Unique URLs will be empty")
-            
-            # ===== 1. SAVE EXCEL FILES =====
-            # Save full Excel
-            full_excel_name = f"Cardladder_{scrape_date_filename}_{mode}.xlsx"
-            # Reorder columns to put sales at end
-            cols = list(df.columns)
-            sale_price_cols = sorted([c for c in cols if 'sale' in c and 'price' in c])
-            sale_date_cols = sorted([c for c in cols if 'sale' in c and 'date' in c])
-            sale_listingtype_cols = sorted([c for c in cols if 'sale' in c and 'listingType' in c])
-            special_cols = [c for c in cols if 'avg_last_3_sales' in c or 'sales_count_for_avg' in c]
-            other_cols = ['Scrape Date', 'Card Unique URL'] + [c for c in cols if c not in (['Scrape Date', 'Card Unique URL'] + sale_price_cols + sale_date_cols + 
-                         sale_listingtype_cols + special_cols)]
-            ordered_cols = (other_cols + sale_price_cols + sale_date_cols + sale_listingtype_cols + special_cols)
-            df_full = df[ordered_cols]
-            
-            # Clean NaN values for Excel
-            df_full_clean = df_full.where(pd.notnull(df_full), None)
-            df_full_clean.to_excel(full_excel_name, index=False, engine='openpyxl')
-            self.log(f"📗 Full Excel saved: {full_excel_name}")
-            
-            # Save filtered Excel
-            filtered_excel_name = f"Filter_cardladder_{scrape_date_filename}_{mode}.xlsx"
-            filtered_columns = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db']
-            available_columns = []
-            for col in filtered_columns:
-                if col in df.columns:
-                    available_columns.append(col)
-                else:
-                    matching_cols = [c for c in df.columns if col.lower() in c.lower()]
-                    if matching_cols:
-                        available_columns.append(matching_cols[0])
-                    else:
-                        available_columns.append(col)
-            df_filtered = pd.DataFrame()
-            for col in available_columns:
-                if col in df.columns:
-                    df_filtered[col] = df[col]
-                else:
-                    df_filtered[col] = None
-            df_filtered = df_filtered[available_columns]
-            
-            # Clean NaN values for Excel
-            df_filtered_clean = df_filtered.where(pd.notnull(df_filtered), None)
-            df_filtered_clean.to_excel(filtered_excel_name, index=False, engine='openpyxl')
-            self.log(f"📘 Filtered Excel saved: {filtered_excel_name}")
-            
-            # ===== 2. SAVE TO GOOGLE SHEETS =====
-            google_sheets_message = ""
-            if self.google_sheets and self.processing:
-                try:
-                    self.log("📊 Connecting to Google Sheets...")
-                    
-                    # Check if credentials are available
-                    if not GOOGLE_CREDENTIALS:
-                        self.log("⚠️ Google Sheets credentials not found in script")
-                        self.log("ℹ️ Add your credentials to the GOOGLE_CREDENTIALS variable at the top of the script")
-                        google_sheets_message = "\n⚠️ Google Sheets: Credentials not configured"
-                    else:
-                        # Initialize with credentials
-                        self.google_sheets.credentials_dict = GOOGLE_CREDENTIALS
-                        success, message = self.google_sheets.connect()
-                        
-                        if success:
-                            # Create or open spreadsheet
-                            sheet_name = f"CardLadder_{scrape_date_filename}_{mode}"
-                            
-                            spreadsheet, msg = self.google_sheets.create_or_open_sheet(sheet_name)
-                            
-                            if spreadsheet:
-                                self.spreadsheet = spreadsheet
-                                
-                                # Save Full Data
-                                self.log("📊 Saving full data to Google Sheets...")
-                                success, message = self.google_sheets.save_dataframe_to_sheet(
-                                    spreadsheet, "Full Data", df_full_clean
-                                )
-                                if success:
-                                    self.log(f"✅ {message}")
-                                else:
-                                    self.log(f"❌ {message}")
-                                
-                                # Save Filtered Data
-                                self.log("📊 Saving filtered data to Google Sheets...")
-                                success, message = self.google_sheets.save_dataframe_to_sheet(
-                                    spreadsheet, "Filtered Data", df_filtered_clean
-                                )
-                                if success:
-                                    self.log(f"✅ {message}")
-                                else:
-                                    self.log(f"❌ {message}")
-                                
-                                # Save Summary
-                                summary_data = {
-                                    'Metric': ['Total Cards', 'Cards with Sales', 'Success Rate', 
-                                              'Scrape Date', 'Collection ID', 'Fetch Mode'],
-                                    'Value': [len(self.collection_data), sales_success,
-                                             f"{(sales_success/len(self.collection_data))*100:.1f}%" if len(self.collection_data) > 0 else "N/A",
-                                             scrape_date_display, cid, mode]
-                                }
-                                df_summary = pd.DataFrame(summary_data)
-                                success, message = self.google_sheets.save_dataframe_to_sheet(
-                                    spreadsheet, "Summary", df_summary
-                                )
-                                if success:
-                                    self.log(f"✅ {message}")
-                                
-                                # Get URL
-                                sheet_url = spreadsheet.url
-                                self.log(f"✅ Google Sheets saved: {sheet_url}")
-                                google_sheets_message = f"\nGoogle Sheets URL:\n{sheet_url}"
-                            else:
-                                self.log(f"❌ Failed to create/open spreadsheet: {msg}")
-                                google_sheets_message = "\n⚠️ Google Sheets save failed"
-                        else:
-                            self.log(f"❌ Google Sheets connection failed: {message}")
-                            google_sheets_message = "\n⚠️ Google Sheets connection failed"
-                            
-                except Exception as e:
-                    self.log(f"❌ Google Sheets error: {str(e)}")
-                    google_sheets_message = f"\n⚠️ Google Sheets error: {str(e)}"
-            
-            # ===== 3. SHOW SUMMARY =====
-            self.log(f"\n{'='*60}")
-            self.log("✨ PROCESS COMPLETE!")
-            self.log(f"{'='*60}")
-            self.log(f"✅ Total cards fetched: {len(self.collection_data)}")
-            self.log(f"✅ Cards with sales data: {sales_success}")
-            
-            # Display fetch mode info
-            if self.fetch_all.get():
-                self.log(f"📊 Mode: Fetched ALL available records")
-            else:
-                self.log(f"📊 Mode: Fetched {len(self.collection_data)} records (User limit: {self.record_limit.get()})")
-            
-            if sales_success > 0:
-                avg_values = []
-                current_values = []
-                for card in self.collection_data:
-                    if 'avg_last_3_sales' in card and card['avg_last_3_sales'] is not None:
-                        avg_values.append(card['avg_last_3_sales'])
-                    if 'currentValue' in card and card['currentValue'] is not None:
-                        current_values.append(card['currentValue'])
-                if avg_values:
-                    overall_avg = sum(avg_values) / len(avg_values)
-                    self.log(f"📊 Overall average of last 3 sales: ${overall_avg:.2f}")
-                if current_values:
-                    overall_current = sum(current_values) / len(current_values)
-                    self.log(f"📊 Overall average current value: ${overall_current:.2f}")
-            
-            if len(self.collection_data) > 0:
-                success_rate = (sales_success / len(self.collection_data)) * 100
-                self.log(f"✅ Success rate: {success_rate:.1f}%")
-            
-            self.update_status(f"Complete! {sales_success}/{len(self.collection_data)} cards have sales", '#00ff88')
-            
-            # Show message box
-            mode_text = "All records" if self.fetch_all.get() else f"{len(self.collection_data)} records (limit: {self.record_limit.get()})"
-            message = (f"✅ Process Complete!\n\n"
-                      f"Fetch Mode: {mode_text}\n"
-                      f"Total cards: {len(self.collection_data)}\n"
-                      f"Cards with sales: {sales_success}\n"
-                      f"Success rate: {(sales_success/len(self.collection_data))*100:.1f}%\n\n"
-                      f"Files saved:\n"
-                      f"• {full_excel_name}\n"
-                      f"• {filtered_excel_name}")
-            
-            if google_sheets_message:
-                message += google_sheets_message
-            
-            self.root.after(0, lambda: messagebox.showinfo("Success", message))
-            
-        except Exception as e:
-            self.log(f"❌ Error saving results: {str(e)}")
-    
-    def stop_process(self):
-        """Stop the current process"""
-        self.processing = False
-        self.log("⏹️ Process stopped by user")
-        self.update_status("Process Stopped", '#ff4444')
-        self.stop_btn.config(state='disabled')
-    
-    def finish_processing(self):
-        """Clean up after processing"""
-        self.processing = False
-        self.root.after(0, lambda: self.start_btn.config(state='normal'))
-        self.root.after(0, lambda: self.stop_btn.config(state='disabled'))
+    except Exception as e:
+        add_log(f"❌ Phase 1 Error: {str(e)}")
+        return False, []
 
-# ==================== MAIN EXECUTION ====================
-if __name__ == "__main__":
-    # Get token first
-    token_gui = TokenInputGUI()
-    token = token_gui.get_token()
+def fetch_sales_for_card(card_data, auth_token):
+    """Fetch last 3 sales for a single card"""
+    try:
+        headers = {
+            'authorization': auth_token,
+            'accept': 'application/json',
+            'user-agent': 'Mozilla/5.0'
+        }
+        
+        # Use label field for search (exact match)
+        label = card_data.get('label', '')
+        
+        if not label:
+            # Build label from components if not available
+            year = card_data.get('year', '')
+            number = card_data.get('number', '')
+            condition = card_data.get('condition', '')
+            card_set = card_data.get('set', '')
+            player = card_data.get('player', '')
+            
+            label = f"{year} {card_set} {player} #{number} {condition}"
+        
+        # Search sales archive using label
+        params = {
+            'index': 'salesarchive',
+            'query': label,
+            'page': 0,
+            'limit': 20,
+            'filters': '',
+            'sort': 'date',
+            'direction': 'desc'
+        }
+        
+        response = requests.get(
+            'https://search-zzvl7ri3bq-uc.a.run.app/search',
+            headers=headers,
+            params=params,
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            hits = data.get('hits', [])
+            total = data.get('totalHits', 0)
+            
+            # Prepare sales data
+            sales_info = {
+                'sales_search_query': label,
+                'total_sales_in_db': total,
+                'sales_found': len(hits)
+            }
+            
+            # Get last 3 sales
+            last_three = hits[:3]
+            
+            # Collect prices for average calculation
+            sale_prices = []
+            
+            for i, sale in enumerate(last_three, 1):
+                price = sale.get('price')
+                date = sale.get('date', '')
+                listing_type = sale.get('listingType', '')
+                
+                # Collect price for average calculation
+                if price is not None:
+                    sale_prices.append(price)
+                
+                # Format date
+                if date and 'T' in date:
+                    try:
+                        dt = datetime.fromisoformat(date.replace('Z', '+00:00'))
+                        date = dt.strftime('%Y-%m-%d')
+                    except:
+                        pass
+                
+                sales_info[f'sale{i}_price'] = price
+                sales_info[f'sale{i}_date'] = date
+                sales_info[f'sale{i}_listingType'] = listing_type
+            
+            # Fill empty slots if less than 3 sales
+            for i in range(len(last_three) + 1, 4):
+                sales_info[f'sale{i}_price'] = None
+                sales_info[f'sale{i}_date'] = None
+                sales_info[f'sale{i}_listingType'] = None
+            
+            # Calculate average of last 3 sales
+            if sale_prices:
+                sales_info['avg_last_3_sales'] = round(sum(sale_prices) / len(sale_prices), 2)
+                sales_info['sales_count_for_avg'] = len(sale_prices)
+            else:
+                sales_info['avg_last_3_sales'] = None
+                sales_info['sales_count_for_avg'] = 0
+            
+            return sales_info
+        else:
+            return None
+            
+    except Exception as e:
+        return None
+
+# ==================== STREAMLIT UI ====================
+st.title("📊 Card Ladder Scraper")
+
+# Sidebar for authentication and settings
+with st.sidebar:
+    st.header("🔐 Authentication")
     
-    if token:
-        # Run the complete scraper
-        scraper = CardLadderScraper(token)
-        scraper.root.mainloop()
+    token_input = st.text_area(
+        "Paste Bearer Token:",
+        height=150,
+        help="Copy the 'authorization' header from DevTools."
+    )
+    
+    if token_input:
+        st.session_state.auth_token = token_input if token_input.startswith('Bearer ') else f'Bearer {token_input}'
+    
+    st.divider()
+    
+    st.header("⚙️ Settings")
+    
+    # Collection ID
+    coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
+    
+    # Record Selection
+    fetch_option = st.radio(
+        "Fetch Records:",
+        ["All Records", "Specific Number"]
+    )
+    
+    if fetch_option == "Specific Number":
+        record_limit = st.number_input(
+            "Number of records to fetch:",
+            min_value=1,
+            max_value=10000,
+            value=50
+        )
+        fetch_all = False
     else:
-        print("No token provided. Exiting.")
+        record_limit = None
+        fetch_all = True
+    
+    # Max Threads
+    max_workers = st.slider("Max Threads:", 1, 10, 1)
+    
+    st.divider()
+    
+    # Control buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🚀 Start Process", use_container_width=True):
+            if not st.session_state.auth_token:
+                st.error("Please provide a Bearer Token!")
+            else:
+                st.session_state.processing = True
+                st.session_state.stop_processing = False
+                st.rerun()
+    
+    with col2:
+        if st.button("⏹️ Stop Process", use_container_width=True):
+            st.session_state.stop_processing = True
+            st.rerun()
+    
+    if st.button("🗑️ Clear Logs", use_container_width=True):
+        clear_logs()
+        st.rerun()
+
+# Main content area
+if st.session_state.auth_token:
+    # Status display
+    if st.session_state.processing:
+        status_placeholder = st.empty()
+        progress_bar = st.progress(0)
+    
+    # Log display
+    st.subheader("📝 Processing Log")
+    log_container = st.container(height=400)
+    
+    with log_container:
+        for log in st.session_state.logs:
+            st.text(log)
+    
+    # Process running indicator
+    if st.session_state.processing and not st.session_state.get('process_started', False):
+        st.session_state.process_started = True
+        
+        # Run the process in a separate thread
+        import threading
+        
+        def run_process():
+            try:
+                # Phase 1: Fetch collection
+                add_log("Starting Phase 1: Fetching collection...")
+                success, collection_data = fetch_collection(
+                    coll_id, 
+                    st.session_state.auth_token, 
+                    fetch_all, 
+                    record_limit
+                )
+                
+                if not success or st.session_state.get('stop_processing', False):
+                    add_log("Process stopped or failed")
+                    st.session_state.processing = False
+                    st.session_state.process_started = False
+                    st.rerun()
+                    return
+                
+                st.session_state.collection_data = collection_data
+                
+                # Phase 2: Fetch sales data
+                add_log(f"\n=== PHASE 2: Fetching Last 3 Sales ===")
+                add_log(f"Processing {len(collection_data)} cards...")
+                
+                sales_success = 0
+                total_cards = len(collection_data)
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = []
+                    for idx, card in enumerate(collection_data, 1):
+                        if st.session_state.get('stop_processing', False):
+                            break
+                        
+                        futures.append((executor.submit(fetch_sales_for_card, card, st.session_state.auth_token), card, idx))
+                    
+                    # Process results as they complete
+                    completed = 0
+                    for future, card, idx in futures:
+                        if st.session_state.get('stop_processing', False):
+                            break
+                        
+                        completed += 1
+                        result = future.result()
+                        
+                        if result:
+                            # Merge sales data into card
+                            card.update(result)
+                            sales_success += 1
+                            
+                            player = card.get('player', f'Card {idx}')
+                            sales_found = result.get('sales_found', 0)
+                            
+                            if sales_found > 0:
+                                add_log(f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales found")
+                            else:
+                                add_log(f"⚠️ [{idx}/{total_cards}] {player}: No sales found")
+                        else:
+                            player = card.get('player', f'Card {idx}')
+                            add_log(f"❌ [{idx}/{total_cards}] {player}: Failed to fetch sales")
+                        
+                        # Update progress
+                        progress = completed / total_cards
+                        progress_bar.progress(progress)
+                        
+                        # Rate limiting
+                        time.sleep(0.2)
+                
+                st.session_state.sales_success = sales_success
+                
+                # Save results
+                if collection_data and not st.session_state.get('stop_processing', False):
+                    add_log("\n=== SAVING RESULTS ===")
+                    
+                    # Create DataFrame
+                    df = pd.json_normalize(collection_data)
+                    
+                    # Add timestamp
+                    current_date = datetime.now()
+                    scrape_date = current_date.strftime("%Y-%m-%d")
+                    
+                    # Add Scrape Date column
+                    df.insert(0, 'Scrape Date', scrape_date)
+                    
+                    # Add Card URL column if available
+                    if 'collectionCardId' in df.columns:
+                        df.insert(1, 'Card Unique URL', df['collectionCardId'].apply(
+                            lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true&backTo=Collection" 
+                            if pd.notna(x) else None
+                        ))
+                    
+                    # Display results
+                    add_log(f"✅ Process Complete!")
+                    add_log(f"✅ Total cards: {len(collection_data)}")
+                    add_log(f"✅ Cards with sales data: {sales_success}")
+                    
+                    if len(collection_data) > 0:
+                        success_rate = (sales_success / len(collection_data)) * 100
+                        add_log(f"✅ Success rate: {success_rate:.1f}%")
+                    
+                    # Save to session state for download
+                    st.session_state.df_full = df
+                    
+                    # Google Sheets integration
+                    if GOOGLE_SHEETS_AVAILABLE and GOOGLE_CREDENTIALS:
+                        try:
+                            add_log("📊 Saving to Google Sheets...")
+                            gs_manager = GoogleSheetsManager()
+                            success, message = gs_manager.connect()
+                            
+                            if success:
+                                sheet_name = f"CardLadder_{current_date.strftime('%Y-%b-%d')}"
+                                spreadsheet, msg = gs_manager.create_or_open_sheet(sheet_name)
+                                
+                                if spreadsheet:
+                                    # Save full data
+                                    gs_manager.save_dataframe_to_sheet(spreadsheet, "Full Data", df)
+                                    add_log(f"✅ Google Sheets saved: {spreadsheet.url}")
+                                else:
+                                    add_log(f"❌ Google Sheets error: {msg}")
+                            else:
+                                add_log(f"❌ Google Sheets connection failed: {message}")
+                        except Exception as e:
+                            add_log(f"❌ Google Sheets error: {str(e)}")
+                    
+                    add_log("✨ Process completed successfully!")
+                
+            except Exception as e:
+                add_log(f"❌ Process Error: {str(e)}")
+            finally:
+                st.session_state.processing = False
+                st.session_state.process_started = False
+                st.rerun()
+        
+        # Start the process thread
+        threading.Thread(target=run_process, daemon=True).start()
+    
+    # Display results and download buttons
+    if not st.session_state.processing and hasattr(st.session_state, 'df_full'):
+        st.divider()
+        st.subheader("📊 Results & Downloads")
+        
+        df = st.session_state.df_full
+        
+        # Display metrics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Cards", len(df))
+        with col2:
+            st.metric("Cards with Sales", st.session_state.sales_success)
+        with col3:
+            if len(df) > 0:
+                success_rate = (st.session_state.sales_success / len(df)) * 100
+                st.metric("Success Rate", f"{success_rate:.1f}%")
+        
+        # Download buttons
+        st.subheader("📥 Download Data")
+        
+        # Prepare data for download
+        current_date = datetime.now().strftime("%Y-%b-%d")
+        mode = "ALL_RECORDS" if fetch_all else f"LIMIT_{record_limit}"
+        
+        # Full Excel
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Collection')
+        excel_data = excel_buffer.getvalue()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button(
+                label="📗 Download Excel (.xlsx)",
+                data=excel_data,
+                file_name=f"Cardladder_{current_date}_{mode}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col2:
+            # CSV
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📊 Download CSV (.csv)",
+                data=csv_data,
+                file_name=f"Cardladder_{current_date}_{mode}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col3:
+            # JSON
+            json_data = json.dumps(st.session_state.collection_data, indent=2).encode('utf-8')
+            st.download_button(
+                label="💾 Download JSON",
+                data=json_data,
+                file_name=f"Cardladder_{current_date}_{mode}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        
+        # Data preview
+        st.subheader("👀 Data Preview")
+        st.dataframe(df.head(50), use_container_width=True)
+else:
+    st.info("👈 Please enter your Bearer Token in the sidebar to get started.")
+
+# Footer
+st.divider()
+st.caption("Card Ladder Scraper • Built with Streamlit")
