@@ -6,17 +6,156 @@ import pandas as pd
 import io
 from datetime import datetime
 import threading
-import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- Page Config ---
+# ==================== GOOGLE SHEETS INTEGRATION ====================
+try:
+    import gspread
+    from google.oauth2.service_account import ServiceAccountCredentials
+    GOOGLE_SHEETS_AVAILABLE = True
+except ImportError:
+    GOOGLE_SHEETS_AVAILABLE = False
+    st.warning("Google Sheets libraries not installed. Run: `pip install gspread google-auth`")
+
+# ==================== YOUR GOOGLE CREDENTIALS ====================
+# WARNING: Use environment variables or Streamlit secrets for production!
+# For now, you can paste your credentials here or use the upload option
+GOOGLE_CREDENTIALS = {
+    "type": "service_account",
+    "project_id": "cardladder",
+    "private_key_id": "3e910525914e6d6fd55c9d3c08f275e755f004a0",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCrEOsApOIkbFk2\nqC+dTy0Pp+AtXoeGLI3xUHqMujmzQJ/eS2t/0\nzJrwdPSeU69otasQlvh/D5yPUw==\n-----END PRIVATE KEY-----\n",
+    "client_email": "cardladder@cardladder.iam.gserviceaccount.com",
+    "client_id": "100678312403939380954",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/cardladder%40cardladder.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+}
+
+# ==================== YOUR SPREADSHEET ID ====================
+SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
+
+# ==================== GOOGLE SHEETS MANAGER ====================
+class GoogleSheetsManager:
+    def __init__(self, credentials_dict=None, spreadsheet_id=None):
+        self.credentials_dict = credentials_dict
+        self.spreadsheet_id = spreadsheet_id
+        self.client = None
+        self.connected = False
+        
+    def connect(self, credentials_json=None):
+        """Connect to Google Sheets API"""
+        try:
+            if not GOOGLE_SHEETS_AVAILABLE:
+                return False, "Google Sheets libraries not installed"
+            
+            # Use provided credentials or default
+            if credentials_json:
+                try:
+                    self.credentials_dict = json.loads(credentials_json)
+                except:
+                    return False, "Invalid JSON format for credentials"
+            elif not self.credentials_dict:
+                return False, "No credentials provided"
+            
+            # Define the scope
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            
+            # Create credentials from dictionary
+            credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+                self.credentials_dict, scope
+            )
+            
+            # Authorize the client
+            self.client = gspread.authorize(credentials)
+            self.connected = True
+            return True, "Connected to Google Sheets API"
+            
+        except Exception as e:
+            return False, f"Connection error: {str(e)}"
+    
+    def create_or_open_sheet(self, sheet_name):
+        """Create a new sheet or open existing one"""
+        try:
+            if not self.connected:
+                success, message = self.connect()
+                if not success:
+                    return None, message
+            
+            if self.spreadsheet_id:
+                # Open existing spreadsheet by ID
+                spreadsheet = self.client.open_by_key(self.spreadsheet_id)
+                return spreadsheet, "Opened existing spreadsheet"
+            else:
+                # Create new spreadsheet
+                spreadsheet = self.client.create(sheet_name)
+                self.spreadsheet_id = spreadsheet.id
+                return spreadsheet, "Created new spreadsheet"
+            
+        except Exception as e:
+            return None, f"Error accessing sheet: {str(e)}"
+    
+    def save_dataframe_to_sheet(self, spreadsheet, sheet_name, df, clear_existing=True):
+        """Save pandas DataFrame to Google Sheet - SIMPLE VERSION"""
+        try:
+            # Create a clean DataFrame copy
+            df_clean = df.copy()
+            
+            # Convert all columns to string type (simplest approach)
+            # This handles arrays, lists, dicts, etc. just like Excel
+            for col in df_clean.columns:
+                # Replace NaN with None first
+                df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
+                
+                # Convert everything to string for Google Sheets compatibility
+                df_clean[col] = df_clean[col].astype(str)
+            
+            # Convert to list for Google Sheets
+            data = [df_clean.columns.values.tolist()] + df_clean.values.tolist()
+            
+            # Try to open existing worksheet
+            try:
+                worksheet = spreadsheet.worksheet(sheet_name)
+                if clear_existing:
+                    worksheet.clear()
+            except gspread.exceptions.WorksheetNotFound:
+                # Create new worksheet
+                worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=26)
+            
+            # Update worksheet with data
+            worksheet.update(data, value_input_option='USER_ENTERED')
+            
+            # Format header row
+            try:
+                worksheet.format('A1:Z1', {
+                    'textFormat': {'bold': True},
+                    'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
+                })
+            except:
+                pass  # Formatting is optional
+            
+            return True, f"Data saved to {sheet_name}"
+            
+        except Exception as e:
+            return False, f"Error saving to sheet: {str(e)}"
+    
+    def get_spreadsheet_url(self, spreadsheet):
+        """Get the URL of the spreadsheet"""
+        return spreadsheet.url
+
+# ==================== PAGE CONFIG ====================
 st.set_page_config(
     page_title="Card Ladder Complete Scraper", 
     page_icon="📦",
     layout="wide"
 )
 
-# Initialize session state for data persistence
+# ==================== SESSION STATE ====================
 if 'full_data' not in st.session_state:
     st.session_state.full_data = []
 if 'sales_data' not in st.session_state:
@@ -29,8 +168,16 @@ if 'logs' not in st.session_state:
     st.session_state.logs = []
 if 'stop_requested' not in st.session_state:
     st.session_state.stop_requested = False
+if 'google_sheets_manager' not in st.session_state:
+    st.session_state.google_sheets_manager = None
+if 'spreadsheet_url' not in st.session_state:
+    st.session_state.spreadsheet_url = ""
+if 'final_df' not in st.session_state:
+    st.session_state.final_df = None
+if 'google_connected' not in st.session_state:
+    st.session_state.google_connected = False
 
-# --- Styling ---
+# ==================== STYLING ====================
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
@@ -45,6 +192,7 @@ st.markdown("""
         font-size: 12px;
         max-height: 400px;
         overflow-y: auto;
+        white-space: pre-wrap;
     }
     .phase-box {
         background-color: #262730;
@@ -53,9 +201,17 @@ st.markdown("""
         border-left: 5px solid #00ff88;
         margin-bottom: 15px;
     }
+    .google-sheets-box {
+        background-color: #1a1a2e;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid #34a853;
+        margin-bottom: 15px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
+# ==================== HELPER FUNCTIONS ====================
 def add_log(message):
     """Add message to logs"""
     timestamp = datetime.now().strftime('%H:%M:%S')
@@ -72,10 +228,68 @@ def update_status(phase, message):
     """Update current phase status"""
     st.session_state.current_phase = f"{phase}: {message}"
 
-# --- Sidebar: Authentication & Settings ---
+def connect_to_google_sheets(credentials_json=None):
+    """Connect to Google Sheets"""
+    try:
+        st.session_state.google_sheets_manager = GoogleSheetsManager(
+            credentials_dict=GOOGLE_CREDENTIALS,
+            spreadsheet_id=SPREADSHEET_ID
+        )
+        
+        if credentials_json:
+            success, message = st.session_state.google_sheets_manager.connect(credentials_json)
+        else:
+            success, message = st.session_state.google_sheets_manager.connect()
+        
+        if success:
+            st.session_state.google_connected = True
+            add_log(f"✅ {message}")
+            return True, message
+        else:
+            add_log(f"❌ {message}")
+            return False, message
+            
+    except Exception as e:
+        add_log(f"❌ Google Sheets connection error: {str(e)}")
+        return False, str(e)
+
+# ==================== SIDEBAR ====================
 with st.sidebar:
     st.header("🔐 Authentication")
-    token_input = st.text_area("Paste Bearer Token:", height=150, help="Copy the 'authorization' header from DevTools.")
+    token_input = st.text_area("Paste Bearer Token:", height=150, 
+                             help="Copy the 'authorization' header from DevTools.")
+    
+    st.divider()
+    st.header("📊 Google Sheets")
+    
+    if not GOOGLE_SHEETS_AVAILABLE:
+        st.error("Google Sheets libraries not installed. Run: `pip install gspread google-auth`")
+    else:
+        st.info("Google Sheets integration is enabled")
+        
+        # Option to use custom credentials
+        use_custom_creds = st.checkbox("Use custom credentials (optional)")
+        
+        custom_credentials = ""
+        if use_custom_creds:
+            custom_credentials = st.text_area("Paste custom credentials JSON:", height=200,
+                                            help="Paste your Google Service Account JSON credentials")
+        
+        if st.button("🔗 Connect to Google Sheets", disabled=st.session_state.google_connected):
+            if custom_credentials:
+                success, message = connect_to_google_sheets(custom_credentials)
+            else:
+                success, message = connect_to_google_sheets()
+            
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+        
+        if st.session_state.google_connected:
+            st.success("✅ Connected to Google Sheets")
+            if st.session_state.spreadsheet_url:
+                st.markdown(f"[📊 Open Spreadsheet]({st.session_state.spreadsheet_url})")
     
     st.divider()
     st.header("⚙️ Settings")
@@ -86,7 +300,8 @@ with st.sidebar:
     with col1:
         max_threads = st.number_input("Max Threads", min_value=1, max_value=10, value=1)
     with col2:
-        request_delay = st.number_input("Request Delay (s)", min_value=0.0, max_value=2.0, value=0.2, step=0.1)
+        request_delay = st.number_input("Request Delay (s)", min_value=0.0, max_value=2.0, 
+                                      value=0.2, step=0.1)
     
     # Record limit options
     st.subheader("📊 Record Limit")
@@ -107,11 +322,17 @@ with st.sidebar:
         st.session_state.full_data = []
         st.session_state.sales_data = {}
         st.session_state.logs = []
+        st.session_state.final_df = None
         st.rerun()
 
-# --- Main UI ---
+# ==================== MAIN UI ====================
 st.title("📦 Card Ladder Complete Scraper")
-st.markdown("This tool fetches cards from your collection and their last 3 sales data.")
+st.markdown("This tool fetches cards from your collection and their last 3 sales data, with Google Sheets export.")
+
+# Google Sheets Status
+if st.session_state.google_connected:
+    st.markdown('<div class="google-sheets-box">✅ <b>Google Sheets Connected</b> - Data will be saved automatically</div>', 
+                unsafe_allow_html=True)
 
 # --- Status Display ---
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -127,7 +348,8 @@ with col2:
 # --- Control Buttons ---
 col1, col2 = st.columns([1, 3])
 with col1:
-    start_button = st.button("🚀 Start Complete Process", type="primary", disabled=st.session_state.processing)
+    start_button = st.button("🚀 Start Complete Process", type="primary", 
+                           disabled=st.session_state.processing or not token_input)
 with col2:
     if st.button("📝 Clear Logs", disabled=st.session_state.processing):
         clear_logs()
@@ -138,11 +360,12 @@ st.subheader("📋 Processing Log")
 log_container = st.container()
 with log_container:
     if st.session_state.logs:
-        st.markdown(f'<div class="log-container">{"<br>".join(st.session_state.logs[-20:])}</div>', unsafe_allow_html=True)
+        log_text = "\n".join(st.session_state.logs[-20:])
+        st.markdown(f'<div class="log-container">{log_text}</div>', unsafe_allow_html=True)
     else:
         st.info("Logs will appear here when the process starts.")
 
-# --- Phase 1: Fetch Collection ---
+# ==================== PHASE 1: FETCH COLLECTION ====================
 def fetch_collection_phase():
     """Phase 1: Fetch all cards from collection"""
     add_log("=== PHASE 1: Fetching Collection ===")
@@ -221,7 +444,7 @@ def fetch_collection_phase():
         update_status("Phase 1 Failed", "Error occurred")
         return False
 
-# --- Phase 2: Fetch Sales Data ---
+# ==================== PHASE 2: FETCH SALES DATA ====================
 def fetch_sales_for_card(card_data):
     """Fetch last 3 sales for a single card"""
     try:
@@ -399,39 +622,15 @@ def fetch_sales_for_all_cards():
     progress_bar.empty()
     return sales_success
 
-# --- Main Process Function ---
-def run_complete_process():
-    """Run the complete process"""
-    st.session_state.processing = True
-    st.session_state.stop_requested = False
-    st.session_state.sales_data = {}
+# ==================== SAVE RESULTS ====================
+def save_results_to_google_sheets(sales_success):
+    """Save results to Google Sheets"""
+    if not st.session_state.google_connected:
+        return "Google Sheets not connected"
     
     try:
-        # Phase 1: Fetch collection
-        phase1_success = fetch_collection_phase()
+        add_log("📊 Saving to Google Sheets...")
         
-        if not phase1_success or st.session_state.stop_requested:
-            return
-        
-        # Phase 2: Fetch sales data
-        sales_success = fetch_sales_for_all_cards()
-        
-        # Prepare final data
-        if st.session_state.full_data and not st.session_state.stop_requested:
-            prepare_final_data(sales_success)
-            
-    except Exception as e:
-        add_log(f"❌ Process Error: {str(e)}")
-    finally:
-        st.session_state.processing = False
-        update_status("Complete", "Process finished")
-        if st.session_state.stop_requested:
-            add_log("⏹️ Process stopped by user")
-
-# --- Prepare Final Data ---
-def prepare_final_data(sales_success):
-    """Prepare final data for download"""
-    try:
         current_date = datetime.now()
         scrape_date_filename = current_date.strftime("%Y-%b-%d")
         scrape_date_display = current_date.strftime("%Y-%m-%d")
@@ -460,8 +659,166 @@ def prepare_final_data(sales_success):
             cols.insert(1, 'Card Unique URL')
             df = df[cols]
         
-        # Store in session state for download
+        # Add Scrape Date at beginning
+        df.insert(0, 'Scrape Date', scrape_date_display)
+        
+        # Create full dataframe
+        cols = list(df.columns)
+        sale_price_cols = sorted([c for c in cols if 'sale' in c and 'price' in c])
+        sale_date_cols = sorted([c for c in cols if 'sale' in c and 'date' in c])
+        sale_listingtype_cols = sorted([c for c in cols if 'sale' in c and 'listingType' in c])
+        special_cols = [c for c in cols if 'avg_last_3_sales' in c or 'sales_count_for_avg' in c]
+        other_cols = ['Scrape Date', 'Card Unique URL'] + [c for c in cols if c not in (['Scrape Date', 'Card Unique URL'] + sale_price_cols + sale_date_cols + 
+                     sale_listingtype_cols + special_cols)]
+        ordered_cols = (other_cols + sale_price_cols + sale_date_cols + sale_listingtype_cols + special_cols)
+        df_full = df[ordered_cols]
+        
+        # Clean NaN values
+        df_full_clean = df_full.where(pd.notnull(df_full), None)
+        
+        # Create filtered dataframe
+        filtered_columns = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 
+                          'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db']
+        available_columns = []
+        for col in filtered_columns:
+            if col in df.columns:
+                available_columns.append(col)
+            else:
+                matching_cols = [c for c in df.columns if col.lower() in c.lower()]
+                if matching_cols:
+                    available_columns.append(matching_cols[0])
+                else:
+                    available_columns.append(col)
+        
+        df_filtered = pd.DataFrame()
+        for col in available_columns:
+            if col in df.columns:
+                df_filtered[col] = df[col]
+            else:
+                df_filtered[col] = None
+        df_filtered = df_filtered[available_columns]
+        df_filtered_clean = df_filtered.where(pd.notnull(df_filtered), None)
+        
+        # Create summary dataframe
+        summary_data = {
+            'Metric': ['Total Cards', 'Cards with Sales', 'Success Rate', 
+                      'Scrape Date', 'Collection ID', 'Mode'],
+            'Value': [len(st.session_state.full_data), sales_success,
+                     f"{(sales_success/len(st.session_state.full_data))*100:.1f}%" if len(st.session_state.full_data) > 0 else "N/A",
+                     scrape_date_display, collection_id, "TEST" if record_limit else "FULL"]
+        }
+        df_summary = pd.DataFrame(summary_data)
+        
+        # Save to Google Sheets
+        sheet_name = f"CardLadder_{scrape_date_filename}"
+        spreadsheet, msg = st.session_state.google_sheets_manager.create_or_open_sheet(sheet_name)
+        
+        if spreadsheet:
+            st.session_state.spreadsheet_url = spreadsheet.url
+            
+            # Save Full Data
+            success, message = st.session_state.google_sheets_manager.save_dataframe_to_sheet(
+                spreadsheet, "Full Data", df_full_clean
+            )
+            if success:
+                add_log(f"✅ {message}")
+            else:
+                add_log(f"❌ {message}")
+            
+            # Save Filtered Data
+            success, message = st.session_state.google_sheets_manager.save_dataframe_to_sheet(
+                spreadsheet, "Filtered Data", df_filtered_clean
+            )
+            if success:
+                add_log(f"✅ {message}")
+            else:
+                add_log(f"❌ {message}")
+            
+            # Save Summary
+            success, message = st.session_state.google_sheets_manager.save_dataframe_to_sheet(
+                spreadsheet, "Summary", df_summary
+            )
+            if success:
+                add_log(f"✅ {message}")
+            else:
+                add_log(f"❌ {message}")
+            
+            add_log(f"✅ Google Sheets saved: {st.session_state.spreadsheet_url}")
+            return f"Data saved to Google Sheets: {st.session_state.spreadsheet_url}"
+        else:
+            add_log(f"❌ Failed to create/open spreadsheet: {msg}")
+            return f"Failed: {msg}"
+            
+    except Exception as e:
+        add_log(f"❌ Google Sheets error: {str(e)}")
+        return f"Error: {str(e)}"
+
+# ==================== MAIN PROCESS ====================
+def run_complete_process():
+    """Run the complete process"""
+    st.session_state.processing = True
+    st.session_state.stop_requested = False
+    st.session_state.sales_data = {}
+    
+    try:
+        # Phase 1: Fetch collection
+        phase1_success = fetch_collection_phase()
+        
+        if not phase1_success or st.session_state.stop_requested:
+            return
+        
+        # Phase 2: Fetch sales data
+        sales_success = fetch_sales_for_all_cards()
+        
+        # Prepare final data for display and download
+        if st.session_state.full_data and not st.session_state.stop_requested:
+            prepare_final_data(sales_success)
+            
+    except Exception as e:
+        add_log(f"❌ Process Error: {str(e)}")
+    finally:
+        st.session_state.processing = False
+        update_status("Complete", "Process finished")
+        if st.session_state.stop_requested:
+            add_log("⏹️ Process stopped by user")
+
+def prepare_final_data(sales_success):
+    """Prepare final data for display and download"""
+    try:
+        current_date = datetime.now()
+        scrape_date_display = current_date.strftime("%Y-%m-%d")
+        
+        # Combine collection data with sales data
+        combined_data = []
+        for idx, card in enumerate(st.session_state.full_data, 1):
+            card_copy = card.copy()
+            if idx in st.session_state.sales_data:
+                card_copy.update(st.session_state.sales_data[idx])
+            card_copy['Scrape Date'] = scrape_date_display
+            combined_data.append(card_copy)
+        
+        # Create DataFrame
+        df = pd.json_normalize(combined_data)
+        
+        # Add Card Unique URL if collectionCardId exists
+        if 'collectionCardId' in df.columns:
+            df['Card Unique URL'] = df['collectionCardId'].apply(
+                lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true&backTo=Collection" 
+                if pd.notna(x) else None
+            )
+            # Move to second position
+            cols = list(df.columns)
+            cols.remove('Card Unique URL')
+            cols.insert(1, 'Card Unique URL')
+            df = df[cols]
+        
+        # Store in session state
         st.session_state.final_df = df
+        
+        # Save to Google Sheets if connected
+        if st.session_state.google_connected:
+            google_sheets_result = save_results_to_google_sheets(sales_success)
+            add_log(google_sheets_result)
         
         # Show summary
         add_log(f"\n{'='*60}")
@@ -494,11 +851,10 @@ def prepare_final_data(sales_success):
     except Exception as e:
         add_log(f"❌ Error preparing data: {str(e)}")
 
-# --- Start Process ---
+# ==================== START PROCESS ====================
 if start_button and token_input:
     if not st.session_state.processing:
         # Run in separate thread to avoid blocking
-        import threading
         thread = threading.Thread(target=run_complete_process, daemon=True)
         thread.start()
         st.rerun()
@@ -506,14 +862,14 @@ else:
     if start_button and not token_input:
         st.error("Please provide a token in the sidebar!")
 
-# --- Display Results & Downloads ---
-if hasattr(st.session_state, 'final_df') and st.session_state.final_df is not None and not st.session_state.processing:
+# ==================== DISPLAY RESULTS & DOWNLOADS ====================
+if st.session_state.final_df is not None and not st.session_state.processing:
     st.divider()
     st.subheader("📊 Export Results")
     
     df = st.session_state.final_df
     
-    # Create two export options
+    # Create export options
     col1, col2, col3 = st.columns(3)
     
     # 1. Full Excel Export
@@ -559,6 +915,10 @@ if hasattr(st.session_state, 'final_df') and st.session_state.final_df is not No
     json_data = json.dumps(export_data, indent=2).encode('utf-8')
     col3.download_button("💾 Download Raw JSON", data=json_data, file_name=json_name)
     
+    # Google Sheets URL
+    if st.session_state.spreadsheet_url:
+        st.markdown(f"**Google Sheets:** [📊 Open Spreadsheet]({st.session_state.spreadsheet_url})")
+    
     # Data Preview
     st.subheader("👀 Data Preview")
     st.dataframe(df.head(50), use_container_width=True)
@@ -582,6 +942,6 @@ if hasattr(st.session_state, 'final_df') and st.session_state.final_df is not No
         cost_basis = df['investment'].sum()
         col4.metric("Cost Basis", f"${cost_basis:,.2f}")
 
-# --- Auto-refresh logs while processing ---
+# ==================== AUTO-REFRESH ====================
 if st.session_state.processing:
     st.rerun()
