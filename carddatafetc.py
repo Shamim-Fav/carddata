@@ -39,7 +39,6 @@ if 'thread_running' not in st.session_state:
 
 # --- Google Sheets Configuration ---
 GOOGLE_CREDENTIALS =GOOGLE_CREDENTIALS ={
-{
   "type": "service_account",
   "project_id": "cardladder",
   "private_key_id": "3e910525914e6d6fd55c9d3c08f275e755f004a0",
