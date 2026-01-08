@@ -167,11 +167,10 @@ with st.sidebar:
     # Collection ID
     coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
     
-    
     # Max Threads
     max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
     
-    # How many records
+    # How many records - KEPT THIS PART
     st.divider()
     st.header("📊 Records Selection")
     record_option = st.radio("How many records?", ["All Records", "Specific Number"])
