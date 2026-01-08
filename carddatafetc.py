@@ -75,7 +75,7 @@ if st.button("🚀 Run Scraper"):
         cards = res.json().get('hits', [])
         
         # 2. Fetch Sales
-        with ThreadPoolExecutor(max_workers=5) as exe:
+        with ThreadPoolExecutor(max_workers=1) as exe:
             sales_results = list(exe.map(lambda c: fetch_sales(auth_token, c), cards))
         
         for i, s in enumerate(sales_results):
