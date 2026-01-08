@@ -1,132 +1,76 @@
 import streamlit as st
 import requests
 import pandas as pd
-import io
-import time
-from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from concurrent.futures import ThreadPoolExecutor
 
-# ==================== PAGE CONFIG ====================
-st.set_page_config(
-    page_title="Card Ladder Scraper",
-    page_icon="📦",
-    layout="wide"
-)
+# ==================== AUTH CONFIG ====================
+SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
-# Initialize session state
-if 'collection_data' not in st.session_state:
-    st.session_state.collection_data = []
-if 'processing' not in st.session_state:
-    st.session_state.processing = False
+def get_gspread_client():
+    # This pulls safely from the Streamlit Secrets you set in the dashboard
+    creds_dict = {
+        "type": "service_account",
+        "project_id": st.secrets["gcp_service_account"]["project_id"],
+        "private_key": st.secrets["gcp_service_account"]["private_key"],
+        "client_email": st.secrets["gcp_service_account"]["client_email"],
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
-# ==================== SIDEBAR ====================
-with st.sidebar:
-    st.title("🔐 Authentication")
-    token_input = st.text_area("Paste Bearer Token:", height=150)
+# ==================== DATA FUNCTIONS ====================
+def get_data(token, coll_id, test_limit):
+    headers = {'authorization': token if "Bearer" in token else f"Bearer {token}"}
+    # Phase 1: Fetch
+    res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                       headers=headers, 
+                       params={'index': 'collectioncards', 'page': 0, 'limit': test_limit, 
+                               'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'})
+    if res.status_code != 200: return []
+    cards = res.json().get('hits', [])
     
-    st.divider()
-    st.title("⚙️ Settings")
-    coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        test_mode = st.checkbox("Test Mode", value=True)
-    with col2:
-        max_workers = st.slider("Max Threads", 1, 10, 3)
-    
-    test_limit = st.number_input("Test Limit", min_value=1, value=5, disabled=not test_mode)
-    
-    if st.button("🗑️ Clear Data"):
-        st.session_state.collection_data = []
-        st.rerun()
+    # Phase 2: Sales
+    with ThreadPoolExecutor(max_workers=3) as exe:
+        def fetch_s(c):
+            r = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, 
+                             params={'index': 'salesarchive', 'query': c.get('label', ''), 'page': 0, 'limit': 3})
+            if r.status_code == 200:
+                h = r.json().get('hits', [])
+                p = [x.get('price') for x in h if x.get('price')]
+                return {'avg_last_3_sales': round(sum(p)/len(p), 2) if p else None}
+            return {}
+        results = list(exe.map(fetch_s, cards))
+        for i, r in enumerate(results): cards[i].update(r)
+    return cards
 
-# ==================== SCRAPING LOGIC ====================
-def fetch_collection():
-    all_cards = []
-    page, limit = 0, 20
-    headers = {'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}", 'accept': 'application/json'}
+# ==================== UI ====================
+st.title("Card Ladder ⮕ Google Sheets")
+
+token = st.sidebar.text_area("Bearer Token:")
+coll_id = st.sidebar.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
+test_limit = st.sidebar.number_input("Card Limit", value=5)
+
+if st.button("🚀 Run Scraper"):
+    data = get_data(token, coll_id, test_limit)
+    if data:
+        st.session_state.df = pd.json_normalize(data)
+        st.success(f"Fetched {len(data)} cards!")
+
+if 'df' in st.session_state:
+    st.dataframe(st.session_state.df.head())
     
-    try:
-        while st.session_state.processing:
-            params = {'index': 'collectioncards', 'page': page, 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'}
-            response = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=15)
+    if st.button("📤 Upload to Google Sheets"):
+        try:
+            client = get_gspread_client()
+            sh = client.open_by_key(SPREADSHEET_ID)
+            ws = sh.get_worksheet(0) # Updates the first tab
+            ws.clear()
             
-            if response.status_code != 200: break
-            data = response.json()
-            hits = data.get('hits', [])
-            if not hits: break
-            
-            all_cards.extend(hits)
-            if test_mode and len(all_cards) >= test_limit:
-                all_cards = all_cards[:test_limit]
-                break
-            if len(all_cards) >= data.get('totalHits', 0) or len(hits) < limit: break
-            page += 1
-            time.sleep(0.2)
-        return all_cards
-    except:
-        return []
-
-def fetch_sales_for_card(card_data):
-    headers = {'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}", 'accept': 'application/json'}
-    label = card_data.get('label', f"{card_data.get('year')} {card_data.get('player')}")
-    params = {'index': 'salesarchive', 'query': label, 'page': 0, 'limit': 3, 'sort': 'date', 'direction': 'desc'}
-    
-    try:
-        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
-        if res.status_code == 200:
-            hits = res.json().get('hits', [])
-            prices = [h.get('price') for h in hits if h.get('price')]
-            sales_info = {'avg_last_3_sales': round(sum(prices)/len(prices), 2) if prices else None}
-            for i, s in enumerate(hits[:3], 1):
-                sales_info[f'sale{i}_price'] = s.get('price')
-                sales_info[f'sale{i}_date'] = s.get('date', '').split('T')[0]
-            return sales_info
-    except:
-        return None
-
-# ==================== MAIN UI ====================
-st.title("📦 Card Ladder Scraper")
-
-if st.button("🚀 Start Scrape", type="primary") and token_input:
-    st.session_state.processing = True
-    
-    # Phase 1
-    cards = fetch_collection()
-    st.session_state.collection_data = cards
-    
-    # Phase 2
-    if cards:
-        bar = st.progress(0)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(fetch_sales_for_card, c): i for i, c in enumerate(cards)}
-            for i, future in enumerate(futures):
-                result = future.result()
-                if result: st.session_state.collection_data[i].update(result)
-                bar.progress((i + 1) / len(cards))
-        
-    st.session_state.processing = False
-    st.success("Scrape Complete!")
-
-# ==================== EXPORT SECTION ====================
-if st.session_state.collection_data and not st.session_state.processing:
-    df = pd.json_normalize(st.session_state.collection_data)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Full Excel
-        out_full = io.BytesIO()
-        df.to_excel(out_full, index=False)
-        st.download_button("📗 Download Full Excel", out_full.getvalue(), "cardladder_full.xlsx", use_container_width=True)
-        
-    with col2:
-        # Filtered Excel
-        cols = ['label', 'condition', 'player', 'currentValue', 'avg_last_3_sales']
-        df_filt = df[[c for c in cols if c in df.columns]]
-        out_filt = io.BytesIO()
-        df_filt.to_excel(out_filt, index=False)
-        st.download_button("📘 Download Filtered Excel", out_filt.getvalue(), "cardladder_filtered.xlsx", use_container_width=True)
-
-    st.subheader("Preview")
-    st.dataframe(df.head(10))
+            df_clean = st.session_state.df.fillna('')
+            ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
+            st.success("Successfully updated Google Sheet!")
+        except Exception as e:
+            st.error(f"Upload failed: {e}")
