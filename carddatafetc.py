@@ -40,7 +40,8 @@ def fetch_sales(token, card):
     }
     try:
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, 
-                           params={'index': 'salesarchive', 'query': label, 'limit': 3, 'sort': 'date', 'direction': 'desc'})
+                           params={'index': 'salesarchive', 'query': label, 'limit': 3, 'sort': 'date', 'direction': 'desc'},
+                           timeout=10)
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
@@ -69,12 +70,37 @@ if st.button("🚀 Run Complete Process"):
     else:
         with st.status("Processing...") as status:
             # 1. Fetch Collection
-            headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
-            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, 
-                               params={'index': 'collectioncards', 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'})
-            cards = res.json().get('hits', [])
+            status.write("📡 Connecting to API...")
+            headers = {
+                'authorization': f"Bearer {token}" if "Bearer" not in token else token,
+                'accept': 'application/json'
+            }
             
+            res = requests.get(
+                'https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                headers=headers, 
+                params={'index': 'collectioncards', 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'}
+            )
+            
+            # --- ERROR HANDLING FOR JSON ERROR ---
+            if res.status_code != 200:
+                st.error(f"API Error ({res.status_code}): Your token might be expired or the Collection ID is wrong.")
+                st.stop()
+            
+            try:
+                data = res.json()
+                cards = data.get('hits', [])
+            except Exception as e:
+                st.error("The server did not send back valid data. Please check your token.")
+                st.stop()
+            # ---------------------------------------
+
+            if not cards:
+                st.warning("No cards found in this collection.")
+                st.stop()
+
             # 2. Fetch Sales
+            status.write(f"✅ Found {len(cards)} cards. Fetching sales data...")
             with ThreadPoolExecutor(max_workers=threads) as exe:
                 sales_results = list(exe.map(lambda c: fetch_sales(token, c), cards))
             for i, s in enumerate(sales_results): cards[i].update(s)
@@ -83,6 +109,7 @@ if st.button("🚀 Run Complete Process"):
             df_full = pd.json_normalize(cards)
             scrape_date = datetime.now().strftime("%Y-%m-%d")
             df_full.insert(0, 'Scrape Date', scrape_date)
+            
             if 'collectionCardId' in df_full.columns:
                 df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
@@ -91,32 +118,37 @@ if st.button("🚀 Run Complete Process"):
             available = [c for c in filter_cols if c in df_full.columns]
             df_filtered = df_full[available].copy()
 
-            # 5. Save to Google Sheets (Cleaned for Sheets)
+            # 5. Save to Google Sheets
+            status.write("📝 Updating Google Sheets...")
             client = get_gspread_client()
             if client:
-                df_sheets = df_filtered.copy().astype(str)
-                ws = client.open_by_key(SPREADSHEET_ID).get_worksheet(0)
-                ws.clear()
-                ws.update([df_sheets.columns.values.tolist()] + df_sheets.values.tolist(), value_input_option='USER_ENTERED')
-                ws.format('A1:Z1', {'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}})
+                try:
+                    df_sheets = df_filtered.copy().astype(str)
+                    ws = client.open_by_key(SPREADSHEET_ID).get_worksheet(0)
+                    ws.clear()
+                    ws.update([df_sheets.columns.values.tolist()] + df_sheets.values.tolist(), value_input_option='USER_ENTERED')
+                    ws.format('A1:Z1', {'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}})
+                except Exception as e:
+                    st.warning(f"Could not update Google Sheets: {e}")
 
             status.update(label="Complete!", state="complete")
 
             # 6. DOWNLOAD BUTTONS (EXCEL)
+            st.write("### 📥 Download Results")
             col1, col2 = st.columns(2)
             
             # Full Excel
             buffer_full = io.BytesIO()
             with pd.ExcelWriter(buffer_full, engine='xlsxwriter') as writer:
                 df_full.to_excel(writer, index=False)
-            col1.download_button("📥 Download Full Excel", buffer_full.getvalue(), f"Cardladder_Full_{scrape_date}.xlsx")
+            col1.download_button("📘 Download Full Excel", buffer_full.getvalue(), f"Cardladder_Full_{scrape_date}.xlsx", key="full_ex")
 
             # Filtered Excel
             buffer_filt = io.BytesIO()
             with pd.ExcelWriter(buffer_filt, engine='xlsxwriter') as writer:
                 df_filtered.to_excel(writer, index=False)
-            col2.download_button("📥 Download Filtered Excel", buffer_filt.getvalue(), f"Filter_Cardladder_{scrape_date}.xlsx")
+            col2.download_button("📗 Download Filtered Excel", buffer_filt.getvalue(), f"Filter_Cardladder_{scrape_date}.xlsx", key="filt_ex")
 
-            st.success("Process successful! Files ready below.")
+            st.write("---")
             st.write("### Filtered Data Preview")
-            st.dataframe(df_filtered.head())
+            st.dataframe(df_filtered)
