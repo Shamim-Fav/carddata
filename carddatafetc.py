@@ -6,6 +6,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import io
+import time
 
 # ==================== GOOGLE SHEETS CONFIG ====================
 def get_gspread_client():
@@ -59,42 +60,77 @@ with st.sidebar:
     st.header("Settings")
     auth_token = st.text_input("Enter Bearer Token", type="password")
     coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
-    limit = st.number_input("Card Limit", value=5, min_value=1)
+    
+    scrape_all = st.checkbox("Scrape ALL Cards", value=False)
+    if not scrape_all:
+        limit = st.number_input("Card Limit", value=5, min_value=1)
+    else:
+        st.info("Scraping all items. This may take a while.")
+        limit = 99999
 
 if st.button("🚀 Run Scraper"):
     if not auth_token:
         st.error("Please provide a token!")
         st.stop()
 
-    with st.status("Fetching Data...") as status:
-        # 1. Fetch Cards
+    all_cards = []
+    
+    with st.status("Processing...") as status:
+        # 1. FETCH CARDS (With Pagination for "All")
+        status.write("📂 Accessing Collection...")
         headers = {'authorization': f"Bearer {auth_token}" if "Bearer" not in auth_token else auth_token}
-        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, 
-                           params={'index': 'collectioncards', 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'})
         
-        cards = res.json().get('hits', [])
+        page = 0
+        limit_per_request = 50 
         
-        # 2. Fetch Sales
+        while True:
+            params = {
+                'index': 'collectioncards', 
+                'limit': limit_per_request, 
+                'page': page,
+                'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'
+            }
+            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params)
+            
+            if res.status_code != 200: break
+            
+            data = res.json()
+            hits = data.get('hits', [])
+            total_available = data.get('totalHits', 0)
+            
+            all_cards.extend(hits)
+            status.write(f"✅ Downloaded {len(all_cards)} of {total_available} cards...")
+
+            # Break if we have everything or hit the user's manual limit
+            if len(all_cards) >= total_available or len(all_cards) >= limit or not hits:
+                break
+            
+            page += 1
+            time.sleep(0.3) # Avoid rate limiting
+
+        # Trim to exact limit if not "Scrape All"
+        cards = all_cards[:limit]
+
+        # 2. FETCH SALES
+        status.write("📈 Fetching Sales History (this takes longer)...")
         with ThreadPoolExecutor(max_workers=1) as exe:
             sales_results = list(exe.map(lambda c: fetch_sales(auth_token, c), cards))
         
         for i, s in enumerate(sales_results):
             cards[i].update(s)
 
-        # 3. Create THE FULL DATAFRAME (Everything)
+        # 3. DATAFRAMES
         df_full = pd.json_normalize(cards)
         scrape_date = datetime.now().strftime("%Y-%m-%d")
         df_full.insert(0, 'Scrape Date', scrape_date)
         if 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-        # 4. Create THE FILTERED DATAFRAME (Only specific columns)
         TARGET_COLS = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db']
-        # We use reindex to handle cases where a column might be missing from the API
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
-        # 5. Sync FILTERED to Google Sheets
-        status.write("📝 Syncing Filtered Data to Google Sheets...")
+        # 4. SYNC TO GOOGLE
+        status.write("📝 Syncing to Google Sheets...")
         client = get_gspread_client()
         if client:
             try:
@@ -102,32 +138,27 @@ if st.button("🚀 Run Scraper"):
                 ws.clear()
                 clean_list = [df_filtered.columns.tolist()] + df_filtered.astype(str).values.tolist()
                 ws.update(clean_list, value_input_option='USER_ENTERED')
-                st.success("✅ Google Sheets Updated!")
+                st.success(f"✅ Google Sheets Updated with {len(df_filtered)} cards!")
             except Exception as e:
                 st.error(f"Sheet Error: {e}")
 
         status.update(label="All Data Processed!", state="complete")
 
-    # --- DOWNLOAD SECTION ---
+    # --- DOWNLOADS ---
     st.divider()
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Filtered Data")
-        st.write("Columns for Google Sheets")
         st.dataframe(df_filtered, height=300)
-        
         buf_f = io.BytesIO()
         with pd.ExcelWriter(buf_f, engine='openpyxl') as writer:
             df_filtered.to_excel(writer, index=False)
-        st.download_button("📥 Download Filtered Excel", buf_f.getvalue(), f"Filtered_Cards_{scrape_date}.xlsx")
+        st.download_button("📥 Download Filtered Excel", buf_f.getvalue(), f"Filtered_{scrape_date}.xlsx")
 
     with col2:
         st.subheader("Full Data")
-        st.write("All available API data")
         st.dataframe(df_full, height=300)
-        
         buf_full = io.BytesIO()
         with pd.ExcelWriter(buf_full, engine='openpyxl') as writer:
             df_full.to_excel(writer, index=False)
-        st.download_button("📥 Download FULL Excel", buf_full.getvalue(), f"Full_Cards_{scrape_date}.xlsx")
+        st.download_button("📥 Download FULL Excel", buf_full.getvalue(), f"Full_{scrape_date}.xlsx")
