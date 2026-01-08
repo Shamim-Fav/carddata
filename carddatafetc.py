@@ -7,18 +7,7 @@ import io
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- Google Sheets Integration ---
-try:
-    import gspread
-    from oauth2client.service_account import ServiceAccountCredentials
-    GOOGLE_SHEETS_AVAILABLE = True
-except ImportError:
-    GOOGLE_SHEETS_AVAILABLE = False
-    st.warning("⚠️ Google Sheets libraries not installed. Run: `pip install gspread oauth2client`")
-
-# ==================== PASTE YOUR CREDENTIALS HERE ====================
-# WARNING: Don't commit credentials to GitHub! Use environment variables instead.
-# To make it work, paste your credentials JSON here:
+# ==================== GOOGLE SHEETS CREDENTIALS ====================
 GOOGLE_CREDENTIALS = {
   "type": "service_account",
   "project_id": "cardladder",
@@ -33,112 +22,11 @@ GOOGLE_CREDENTIALS = {
   "universe_domain": "googleapis.com"
 }
 
-# ==================== YOUR SPREADSHEET ID ====================
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
-
-class GoogleSheetsManager:
-    def __init__(self, credentials_dict=None, spreadsheet_id=None):
-        self.credentials_dict = credentials_dict or GOOGLE_CREDENTIALS
-        self.spreadsheet_id = spreadsheet_id or SPREADSHEET_ID
-        self.client = None
-        self.connected = False
-        
-    def connect(self):
-        """Connect to Google Sheets API"""
-        try:
-            if not GOOGLE_SHEETS_AVAILABLE:
-                return False, "Google Sheets libraries not installed"
-                
-            if not self.credentials_dict:
-                return False, "No credentials provided"
-            
-            # Define the scope
-            scope = ['https://spreadsheets.google.com/feeds',
-                    'https://www.googleapis.com/auth/drive']
-            
-            # Create credentials from dictionary
-            credentials = ServiceAccountCredentials.from_json_keyfile_dict(
-                self.credentials_dict, scope)
-            
-            # Authorize the client
-            self.client = gspread.authorize(credentials)
-            self.connected = True
-            return True, "Connected to Google Sheets API"
-            
-        except Exception as e:
-            return False, f"Connection error: {str(e)}"
-    
-    def create_or_open_sheet(self, sheet_name):
-        """Create a new sheet or open existing one"""
-        try:
-            if not self.connected:
-                success, message = self.connect()
-                if not success:
-                    return None, message
-            
-            if self.spreadsheet_id:
-                # Open existing spreadsheet by ID
-                spreadsheet = self.client.open_by_key(self.spreadsheet_id)
-            else:
-                # Create new spreadsheet
-                spreadsheet = self.client.create(sheet_name)
-                self.spreadsheet_id = spreadsheet.id
-            
-            return spreadsheet, "Success"
-            
-        except Exception as e:
-            return None, f"Error accessing sheet: {str(e)}"
-    
-    def save_dataframe_to_sheet(self, spreadsheet, sheet_name, df, clear_existing=True):
-        """Save pandas DataFrame to Google Sheet - SIMPLE VERSION"""
-        try:
-            # Create a clean DataFrame copy
-            df_clean = df.copy()
-            
-            # Convert all columns to string type (simplest approach)
-            for col in df_clean.columns:
-                # Replace NaN with None first
-                df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
-                
-                # Convert everything to string for Google Sheets compatibility
-                df_clean[col] = df_clean[col].astype(str)
-            
-            # Convert to list for Google Sheets
-            data = [df_clean.columns.values.tolist()] + df_clean.values.tolist()
-            
-            # Try to open existing worksheet
-            try:
-                worksheet = spreadsheet.worksheet(sheet_name)
-                if clear_existing:
-                    worksheet.clear()
-            except gspread.exceptions.WorksheetNotFound:
-                # Create new worksheet
-                worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=26)
-            
-            # Update worksheet with data
-            worksheet.update(data, value_input_option='USER_ENTERED')
-            
-            # Format header row
-            try:
-                worksheet.format('A1:Z1', {
-                    'textFormat': {'bold': True},
-                    'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
-                })
-            except:
-                pass  # Formatting is optional
-            
-            return True, f"Data saved to {sheet_name}"
-            
-        except Exception as e:
-            return False, f"Error saving to sheet: {str(e)}"
-    
-    def get_spreadsheet_url(self, spreadsheet):
-        """Get the URL of the spreadsheet"""
-        return spreadsheet.url
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Card Data Scraper",
+    page_title="Card Ladder Complete Scraper",
     page_icon="📦",
     layout="wide"
 )
@@ -152,8 +40,6 @@ if 'processing' not in st.session_state:
     st.session_state.processing = False
 if 'current_phase' not in st.session_state:
     st.session_state.current_phase = ""
-if 'google_sheets_url' not in st.session_state:
-    st.session_state.google_sheets_url = ""
 
 # --- Styling ---
 st.markdown("""
@@ -167,13 +53,6 @@ st.markdown("""
         border-radius: 10px; 
         border-left: 5px solid #007acc;
         box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-    }
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 5px;
-        padding: 15px;
-        margin: 10px 0;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -194,41 +73,12 @@ with st.sidebar:
     
     max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
     
-    max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
-    
-    # Google Sheets Settings
-    st.divider()
-    st.header("📊 Google Sheets")
-    use_google_sheets = st.checkbox("Enable Google Sheets Export", value=True)
-    
-    if use_google_sheets:
-        if not GOOGLE_SHEETS_AVAILABLE:
-            st.error("⚠️ Google Sheets libraries not installed")
-            st.code("pip install gspread oauth2client", language="bash")
-        else:
-            st.success("✅ Google Sheets ready")
-            
-            # Allow custom credentials
-            custom_credentials = st.checkbox("Use custom credentials")
-            if custom_credentials:
-                credentials_json = st.text_area("Paste Google Service Account JSON:", height=200)
-                if credentials_json:
-                    try:
-                        GOOGLE_CREDENTIALS = json.loads(credentials_json)
-                    except:
-                        st.error("Invalid JSON format")
-            
-            custom_spreadsheet = st.checkbox("Use custom Spreadsheet ID")
-            if custom_spreadsheet:
-                SPREADSHEET_ID = st.text_input("Spreadsheet ID", value=SPREADSHEET_ID)
-    
     st.divider()
     
     if st.button("🗑️ Clear All Data", type="secondary"):
         st.session_state.full_data = []
         st.session_state.sales_data_added = False
         st.session_state.processing = False
-        st.session_state.google_sheets_url = ""
         st.rerun()
     
     if st.button("🛑 Stop Process", type="secondary"):
@@ -236,7 +86,7 @@ with st.sidebar:
         st.rerun()
 
 # --- Main UI ---
-st.title("📦 Card Data Scraper")
+st.title("📦 Card Ladder Complete Scraper")
 st.info("This tool performs a two-phase scrape: 1) Fetch collection cards, 2) Fetch last 3 sales for each card")
 
 # --- Status Display ---
@@ -550,72 +400,6 @@ def create_dataframes():
     
     return df_full, df_filtered, scrape_date_filename
 
-def save_to_google_sheets(df_full, df_filtered, scrape_date_filename, sales_success, total_cards):
-    """Save data to Google Sheets"""
-    try:
-        if not use_google_sheets or not GOOGLE_SHEETS_AVAILABLE:
-            return False, "Google Sheets not enabled or libraries not installed"
-        
-        # Initialize Google Sheets manager
-        gs_manager = GoogleSheetsManager(GOOGLE_CREDENTIALS, SPREADSHEET_ID)
-        
-        # Connect to Google Sheets
-        status_placeholder.info("📊 Connecting to Google Sheets...")
-        success, message = gs_manager.connect()
-        
-        if not success:
-            return False, message
-        
-        # Create or open spreadsheet
-        sheet_name = f"CardLadder_{scrape_date_filename}"
-        spreadsheet, msg = gs_manager.create_or_open_sheet(sheet_name)
-        
-        if not spreadsheet:
-            return False, msg
-        
-        # Save Full Data
-        status_placeholder.info("📊 Saving full data to Google Sheets...")
-        success, message = gs_manager.save_dataframe_to_sheet(
-            spreadsheet, "Full Data", df_full
-        )
-        
-        if not success:
-            return False, f"Failed to save full data: {message}"
-        
-        # Save Filtered Data
-        status_placeholder.info("📊 Saving filtered data to Google Sheets...")
-        success, message = gs_manager.save_dataframe_to_sheet(
-            spreadsheet, "Filtered Data", df_filtered
-        )
-        
-        if not success:
-            return False, f"Failed to save filtered data: {message}"
-        
-        # Save Summary
-        summary_data = {
-            'Metric': ['Total Cards', 'Cards with Sales', 'Success Rate', 
-                      'Scrape Date', 'Collection ID', 'Mode'],
-            'Value': [total_cards, sales_success,
-                     f"{(sales_success/total_cards)*100:.1f}%" if total_cards > 0 else "N/A",
-                     datetime.now().strftime("%Y-%m-%d"), coll_id, "TEST" if test_mode else "FULL"]
-        }
-        df_summary = pd.DataFrame(summary_data)
-        success, message = gs_manager.save_dataframe_to_sheet(
-            spreadsheet, "Summary", df_summary
-        )
-        
-        if not success:
-            return False, f"Failed to save summary: {message}"
-        
-        # Get URL
-        sheet_url = spreadsheet.url
-        st.session_state.google_sheets_url = sheet_url
-        
-        return True, f"Data successfully saved to Google Sheets: {sheet_url}"
-        
-    except Exception as e:
-        return False, f"Google Sheets error: {str(e)}"
-
 # --- Main Processing Logic ---
 if start_button and not st.session_state.processing:
     if not token_input:
@@ -655,38 +439,9 @@ if start_button and not st.session_state.processing:
                             avg_sales = df_full['avg_last_3_sales'].mean()
                             st.metric("Avg Last 3 Sales", f"${avg_sales:.2f}" if pd.notna(avg_sales) else "N/A")
                     
-                    # Google Sheets Export
-                    if use_google_sheets and GOOGLE_SHEETS_AVAILABLE:
-                        st.divider()
-                        st.subheader("📊 Google Sheets Export")
-                        
-                        gs_status = st.empty()
-                        gs_status.info("Saving to Google Sheets...")
-                        
-                        gs_success, gs_message = save_to_google_sheets(
-                            df_full, df_filtered, scrape_date_filename, 
-                            sales_success, card_count
-                        )
-                        
-                        if gs_success:
-                            gs_status.success(gs_message)
-                            
-                            # Display the URL
-                            if st.session_state.google_sheets_url:
-                                st.markdown(f"""
-                                <div class="success-box">
-                                    <strong>✅ Google Sheets Link:</strong><br>
-                                    <a href="{st.session_state.google_sheets_url}" target="_blank">{st.session_state.google_sheets_url}</a>
-                                </div>
-                                """, unsafe_allow_html=True)
-                        else:
-                            gs_status.error(f"Google Sheets failed: {gs_message}")
-                    
                     # File Download Section
                     st.divider()
                     st.subheader("📥 Download Results")
-                    
-                    mode = "TEST" if test_mode else "FULL"
                     
                     tab1, tab2 = st.tabs(["📗 Full Data", "📘 Filtered Data"])
                     
@@ -787,15 +542,6 @@ elif st.session_state.full_data:
                 cards_with_sales = df_full['avg_last_3_sales'].count()
                 st.metric("Cards with Sales Data", cards_with_sales)
         
-        # Google Sheets link if available
-        if st.session_state.google_sheets_url:
-            st.markdown(f"""
-            <div class="success-box">
-                <strong>📊 Google Sheets Link:</strong><br>
-                <a href="{st.session_state.google_sheets_url}" target="_blank">{st.session_state.google_sheets_url}</a>
-            </div>
-            """, unsafe_allow_html=True)
-        
         # Quick preview
         with st.expander("🔍 Preview Data"):
             preview_cols = ['Scrape Date', 'player', 'condition', 'currentValue', 'avg_last_3_sales']
@@ -819,19 +565,14 @@ elif not st.session_state.processing:
            - Default is provided for testing
         
         3. **Configure Settings:**
-           - Start with **Test Mode** (limits to 5 cards)
            - Adjust thread count for speed
-           - Enable Google Sheets for cloud storage
-           - For full run, disable Test Mode
         
         4. **Click "START COMPLETE PROCESS"**
            - Phase 1: Fetches all cards from collection
            - Phase 2: Fetches last 3 sales for each card
-           - Auto-saves to Google Sheets if enabled
         
         5. **Download Results:**
            - Full Excel with all data
            - Filtered Excel with key columns
            - CSV and JSON formats available
-           - Direct link to Google Sheets
         """)
