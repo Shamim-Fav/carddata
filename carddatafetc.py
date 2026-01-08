@@ -29,9 +29,7 @@ if 'processing' not in st.session_state:
 if 'stop_requested' not in st.session_state:
     st.session_state.stop_requested = False
 
-# ==================== PASTE YOUR CREDENTIALS HERE ====================
-# WARNING: Don't commit credentials to GitHub! Use environment variables instead.
-# To make it work, paste your credentials JSON here:
+# --- Google Sheets Configuration ---
 GOOGLE_CREDENTIALS =GOOGLE_CREDENTIALS ={
   "type": "service_account",
   "project_id": "cardladder",
@@ -295,7 +293,6 @@ def fetch_collection_data():
             all_cards.extend(hits)
             log_message(f"✅ Page {page}: {len(hits)} cards (Total: {len(all_cards)}/{total})")
             
-            
             # Apply record count limit if specified
             if record_count and len(all_cards) >= record_count:
                 all_cards = all_cards[:record_count]
@@ -419,7 +416,7 @@ def fetch_sales_for_all_cards(cards):
     """Fetch sales for all collected cards"""
     if not cards:
         log_message("❌ No collection data to process")
-        return 0
+        return 0, []
     
     log_message(f"\n=== PHASE 2: Fetching Last 3 Sales ===")
     
@@ -455,21 +452,7 @@ def fetch_sales_for_all_cards(cards):
                 avg_price = result.get('avg_last_3_sales')
                 
                 if sales_found > 0:
-                    prices = []
-                    for i in range(1, 4):
-                        price = result.get(f'sale{i}_price')
-                        listing_type = result.get(f'sale{i}_listingType', '')
-                        if price:
-                            price_str = f"${price}"
-                            if listing_type:
-                                price_str += f" ({listing_type})"
-                            prices.append(price_str)
-                    
-                    if prices:
-                        avg_str = f", Avg: ${avg_price:.2f}" if avg_price else ""
-                        log_message(f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales{avg_str}")
-                    else:
-                        log_message(f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales")
+                    log_message(f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales, Avg: ${avg_price:.2f}" if avg_price else f"✅ [{idx}/{total_cards}] {player}: {sales_found} sales")
                 else:
                     log_message(f"⚠️ [{idx}/{total_cards}] {player}: No sales found")
             else:
@@ -520,6 +503,21 @@ def save_to_google_sheets(df_full, df_filtered, sales_success):
         )
         if success:
             log_message(f"✅ {message}")
+        
+        # Save Summary
+        summary_data = {
+            'Metric': ['Total Cards', 'Cards with Sales', 'Success Rate', 
+                      'Scrape Date', 'Collection ID'],
+            'Value': [len(df_full), sales_success,
+                     f"{(sales_success/len(df_full))*100:.1f}%" if len(df_full) > 0 else "N/A",
+                     datetime.now().strftime("%Y-%m-%d"), coll_id]
+        }
+        df_summary = pd.DataFrame(summary_data)
+        success, message = google_sheets.save_dataframe_to_sheet(
+            spreadsheet, "Summary", df_summary
+        )
+        if success:
+            log_message(f"✅ Summary saved")
         
         # Get URL
         sheet_url = spreadsheet.url
@@ -594,6 +592,8 @@ def run_complete_process():
             # Save to Google Sheets if enabled
             if use_google_sheets:
                 sheet_url = save_to_google_sheets(df, df_filtered, sales_success)
+                if sheet_url:
+                    log_message(f"📊 Google Sheets URL: {sheet_url}")
             
             # Show summary
             log_message(f"\n{'='*60}")
@@ -619,7 +619,6 @@ if start_button and token_input and not st.session_state.processing:
     log_message("Starting complete scraper process...")
     
     # Start processing in a separate thread
-    import threading
     thread = threading.Thread(target=run_complete_process)
     thread.daemon = True
     thread.start()
@@ -633,7 +632,7 @@ if st.session_state.full_data:
     
     # Summary Metrics
     st.subheader("📈 Collection Snapshot")
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     
     df = pd.json_normalize(st.session_state.full_data)
     
@@ -647,17 +646,21 @@ if st.session_state.full_data:
         total_value = df['currentValue'].sum()
         m4.metric("Total Current Value", f"${total_value:,.2f}")
     
+    if 'avg_last_3_sales' in df.columns:
+        avg_sales = df['avg_last_3_sales'].mean()
+        m5.metric("Avg Last 3 Sales", f"${avg_sales:,.2f}" if not pd.isna(avg_sales) else "N/A")
+    
     # Export Section
     st.subheader("📊 Export Results")
     c1, c2, c3, c4 = st.columns(4)
     
     # 1. Full Excel Export
+    current_date = datetime.now().strftime("%Y-%b-%d")
     output_excel_full = io.BytesIO()
     with pd.ExcelWriter(output_excel_full, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Full Collection')
     excel_full_data = output_excel_full.getvalue()
     
-    current_date = datetime.now().strftime("%Y-%b-%d")
     c1.download_button(
         "📗 Download Full Excel", 
         data=excel_full_data, 
