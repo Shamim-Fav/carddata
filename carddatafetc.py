@@ -2,215 +2,131 @@ import streamlit as st
 import requests
 import pandas as pd
 import io
-import json
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
-    page_title="Card Ladder Scraper (Read-Only Google Sheet)",
+    page_title="Card Ladder Scraper",
     page_icon="📦",
     layout="wide"
 )
 
-# ==================== SESSION STATE ====================
+# Initialize session state
 if 'collection_data' not in st.session_state:
     st.session_state.collection_data = []
 if 'processing' not in st.session_state:
     st.session_state.processing = False
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
-if 'sales_success' not in st.session_state:
-    st.session_state.sales_success = 0
 
-# ==================== SETTINGS ====================
-# Collection ID
-coll_id = "zKC3o1sfYEcBGNaTPDRn"
-# Test mode
-test_mode = True
-test_limit = 5
-# Max threads
-max_workers = 2
-# Bearer token (paste your token here)
-token_input = "YOUR_BEARER_TOKEN_HERE"
-# Google Sheet CSV (public read-only)
-gs_csv_url = "https://docs.google.com/spreadsheets/d/1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw/export?format=csv&gid=2146192861"
+# ==================== SIDEBAR ====================
+with st.sidebar:
+    st.title("🔐 Authentication")
+    token_input = st.text_area("Paste Bearer Token:", height=150)
+    
+    st.divider()
+    st.title("⚙️ Settings")
+    coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        test_mode = st.checkbox("Test Mode", value=True)
+    with col2:
+        max_workers = st.slider("Max Threads", 1, 10, 3)
+    
+    test_limit = st.number_input("Test Limit", min_value=1, value=5, disabled=not test_mode)
+    
+    if st.button("🗑️ Clear Data"):
+        st.session_state.collection_data = []
+        st.rerun()
 
-# ==================== LOGGING ====================
-def log_message(message):
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    st.session_state.logs.append(f"[{timestamp}] {message}")
-    if len(st.session_state.logs) > 100:
-        st.session_state.logs = st.session_state.logs[-100:]
-
-# ==================== DATA IMPORT ====================
-def load_google_sheet_csv(url):
-    """Load CSV from public Google Sheet"""
+# ==================== SCRAPING LOGIC ====================
+def fetch_collection():
+    all_cards = []
+    page, limit = 0, 20
+    headers = {'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}", 'accept': 'application/json'}
+    
     try:
-        df = pd.read_csv(url)
-        st.session_state.collection_data = df.to_dict('records')
-        log_message(f"✅ Loaded {len(st.session_state.collection_data)} cards from Google Sheet")
-        return True
-    except Exception as e:
-        log_message(f"❌ Failed to load Google Sheet: {str(e)}")
-        return False
-
-# ==================== SCRAPING FUNCTIONS ====================
-def fetch_sales_for_card(card_data):
-    """Fetch last 3 sales for a single card"""
-    try:
-        headers = {
-            'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}",
-            'accept': 'application/json',
-            'user-agent': 'Mozilla/5.0'
-        }
-
-        label = card_data.get('label', '')
-        if not label:
-            year = card_data.get('year', '')
-            number = card_data.get('number', '')
-            condition = card_data.get('condition', '')
-            card_set = card_data.get('set', '')
-            player = card_data.get('player', '')
-            label = f"{year} {card_set} {player} #{number} {condition}"
-
-        params = {
-            'index': 'salesarchive',
-            'query': label,
-            'page': 0,
-            'limit': 20,
-            'filters': '',
-            'sort': 'date',
-            'direction': 'desc'
-        }
-
-        response = requests.get(
-            'https://search-zzvl7ri3bq-uc.a.run.app/search',
-            headers=headers,
-            params=params,
-            timeout=15
-        )
-
-        if response.status_code == 200:
+        while st.session_state.processing:
+            params = {'index': 'collectioncards', 'page': page, 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'}
+            response = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=15)
+            
+            if response.status_code != 200: break
             data = response.json()
             hits = data.get('hits', [])
-            sales_info = {
-                'sales_search_query': label,
-                'total_sales_in_db': data.get('totalHits', 0),
-                'sales_found': len(hits)
-            }
+            if not hits: break
+            
+            all_cards.extend(hits)
+            if test_mode and len(all_cards) >= test_limit:
+                all_cards = all_cards[:test_limit]
+                break
+            if len(all_cards) >= data.get('totalHits', 0) or len(hits) < limit: break
+            page += 1
+            time.sleep(0.2)
+        return all_cards
+    except:
+        return []
 
-            last_three = hits[:3]
-            sale_prices = []
-
-            for i, sale in enumerate(last_three, 1):
-                price = sale.get('price')
-                date = sale.get('date', '')
-                listing_type = sale.get('listingType', '')
-
-                if price is not None:
-                    sale_prices.append(price)
-
-                if date and 'T' in date:
-                    try:
-                        dt = datetime.fromisoformat(date.replace('Z', '+00:00'))
-                        date = dt.strftime('%Y-%m-%d')
-                    except:
-                        pass
-
-                sales_info[f'sale{i}_price'] = price
-                sales_info[f'sale{i}_date'] = date
-                sales_info[f'sale{i}_listingType'] = listing_type
-
-            for i in range(len(last_three) + 1, 4):
-                sales_info[f'sale{i}_price'] = None
-                sales_info[f'sale{i}_date'] = None
-                sales_info[f'sale{i}_listingType'] = None
-
-            if sale_prices:
-                sales_info['avg_last_3_sales'] = round(sum(sale_prices) / len(sale_prices), 2)
-                sales_info['sales_count_for_avg'] = len(sale_prices)
-            else:
-                sales_info['avg_last_3_sales'] = None
-                sales_info['sales_count_for_avg'] = 0
-
+def fetch_sales_for_card(card_data):
+    headers = {'authorization': token_input if "Bearer" in token_input else f"Bearer {token_input}", 'accept': 'application/json'}
+    label = card_data.get('label', f"{card_data.get('year')} {card_data.get('player')}")
+    params = {'index': 'salesarchive', 'query': label, 'page': 0, 'limit': 3, 'sort': 'date', 'direction': 'desc'}
+    
+    try:
+        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
+        if res.status_code == 200:
+            hits = res.json().get('hits', [])
+            prices = [h.get('price') for h in hits if h.get('price')]
+            sales_info = {'avg_last_3_sales': round(sum(prices)/len(prices), 2) if prices else None}
+            for i, s in enumerate(hits[:3], 1):
+                sales_info[f'sale{i}_price'] = s.get('price')
+                sales_info[f'sale{i}_date'] = s.get('date', '').split('T')[0]
             return sales_info
-        else:
-            return None
     except:
         return None
 
-def fetch_sales_for_all_cards():
-    """Fetch sales for all cards"""
-    if not st.session_state.collection_data:
-        log_message("❌ No collection data to process")
-        return 0
+# ==================== MAIN UI ====================
+st.title("📦 Card Ladder Scraper")
 
-    total_cards = len(st.session_state.collection_data)
-    sales_success = 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(fetch_sales_for_card, card) for card in st.session_state.collection_data]
-
-        for idx, future in enumerate(futures, 1):
-            result = future.result()
-            if result:
-                st.session_state.collection_data[idx-1].update(result)
-                sales_success += 1
-                log_message(f"✅ [{idx}/{total_cards}] Card processed: {result.get('sales_found',0)} sales found")
-            else:
-                log_message(f"❌ [{idx}/{total_cards}] Failed to fetch sales")
-
-    return sales_success
-
-# ==================== MAIN PROCESS ====================
-if not st.session_state.collection_data:
-    load_google_sheet_csv(gs_csv_url)
-
-if st.session_state.collection_data:
-    st.subheader("Collection Loaded ✅")
-    st.write(f"Total Cards: {len(st.session_state.collection_data)}")
-
-    if st.button("🚀 Fetch Last 3 Sales for All Cards"):
-        st.session_state.processing = True
-        with st.spinner("Fetching sales data..."):
-            st.session_state.sales_success = fetch_sales_for_all_cards()
-        st.success(f"Completed! Sales fetched for {st.session_state.sales_success}/{len(st.session_state.collection_data)} cards")
-
-# ==================== EXPORT DATA ====================
-if st.session_state.collection_data:
-    df = pd.DataFrame(st.session_state.collection_data)
+if st.button("🚀 Start Scrape", type="primary") and token_input:
+    st.session_state.processing = True
     
-    # Excel
-    output_excel = io.BytesIO()
-    df.to_excel(output_excel, index=False)
-    st.download_button(
-        label="📗 Download Excel",
-        data=output_excel.getvalue(),
-        file_name="CardLadder_Data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # Phase 1
+    cards = fetch_collection()
+    st.session_state.collection_data = cards
+    
+    # Phase 2
+    if cards:
+        bar = st.progress(0)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(fetch_sales_for_card, c): i for i, c in enumerate(cards)}
+            for i, future in enumerate(futures):
+                result = future.result()
+                if result: st.session_state.collection_data[i].update(result)
+                bar.progress((i + 1) / len(cards))
+        
+    st.session_state.processing = False
+    st.success("Scrape Complete!")
 
-    # CSV
-    csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8')
-    st.download_button(
-        label="📊 Download CSV",
-        data=csv_data,
-        file_name="CardLadder_Data.csv",
-        mime="text/csv"
-    )
+# ==================== EXPORT SECTION ====================
+if st.session_state.collection_data and not st.session_state.processing:
+    df = pd.json_normalize(st.session_state.collection_data)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Full Excel
+        out_full = io.BytesIO()
+        df.to_excel(out_full, index=False)
+        st.download_button("📗 Download Full Excel", out_full.getvalue(), "cardladder_full.xlsx", use_container_width=True)
+        
+    with col2:
+        # Filtered Excel
+        cols = ['label', 'condition', 'player', 'currentValue', 'avg_last_3_sales']
+        df_filt = df[[c for c in cols if c in df.columns]]
+        out_filt = io.BytesIO()
+        df_filt.to_excel(out_filt, index=False)
+        st.download_button("📘 Download Filtered Excel", out_filt.getvalue(), "cardladder_filtered.xlsx", use_container_width=True)
 
-    # JSON
-    json_data = json.dumps(st.session_state.collection_data, indent=2).encode('utf-8')
-    st.download_button(
-        label="💾 Download JSON",
-        data=json_data,
-        file_name="CardLadder_Data.json",
-        mime="application/json"
-    )
-
-# ==================== LOGS ====================
-st.subheader("📝 Logs")
-for log in st.session_state.logs[-20:]:
-    st.text(log)
+    st.subheader("Preview")
+    st.dataframe(df.head(10))
