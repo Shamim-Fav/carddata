@@ -10,6 +10,7 @@ import io
 # ==================== CONFIGURATION ====================
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
+@st.cache_resource
 def get_gspread_client():
     try:
         s = st.secrets["gcp_service_account"]
@@ -47,7 +48,7 @@ def fetch_sales(token, card):
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             prices = [h.get('price') for h in hits if h.get('price')]
-            # Explicitly map the last 3 sales
+            
             for i in range(3):
                 if i < len(prices):
                     res_data[f'sale{i+1}_price'] = prices[i]
@@ -59,7 +60,7 @@ def fetch_sales(token, card):
 
 # ==================== INTERFACE ====================
 st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
-st.title("📊 Card Ladder Scraper (Full & Filtered Excel)")
+st.title("📊 Card Ladder Scraper")
 
 with st.sidebar:
     token = st.text_area("Bearer Token")
@@ -78,17 +79,16 @@ if st.button("🚀 Run Complete Process"):
                                params={'index': 'collectioncards', 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'})
             
             if res.status_code != 200:
-                st.error(f"API Error: {res.status_code}. Check token.")
+                st.error(f"API Error: {res.status_code}")
                 st.stop()
             
             cards = res.json().get('hits', [])
             
             # 2. Fetch Sales
-            status.write(f"✅ Found {len(cards)} cards. Fetching sales data...")
+            status.write(f"✅ Found {len(cards)} cards. Fetching sales...")
             with ThreadPoolExecutor(max_workers=threads) as exe:
                 sales_results = list(exe.map(lambda c: fetch_sales(token, c), cards))
             
-            # Merge sales results into card data
             for i, s in enumerate(sales_results): 
                 cards[i].update(s)
 
@@ -100,18 +100,17 @@ if st.button("🚀 Run Complete Process"):
             if 'collectionCardId' in df_full.columns:
                 df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-            # 4. Create Filtered Dataframe (Mirroring your original logic)
-            # Added sale prices back to filtered list as per your original request
+            # 4. Create Filtered Dataframe
             filter_cols = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db', 'sale1_price', 'sale2_price', 'sale3_price']
             available = [c for c in filter_cols if c in df_full.columns]
             df_filtered = df_full[available].copy()
 
-            # 5. Save to Google Sheets
-            status.write("📝 Updating Google Sheets...")
+            # 5. Save ONLY Filtered Data to Google Sheets
+            status.write("📝 Updating Google Sheets (Filtered Data)...")
             client = get_gspread_client()
             if client:
                 try:
-                    df_sheets = df_filtered.copy().astype(str)
+                    df_sheets = df_filtered.copy().fillna('').astype(str)
                     ws = client.open_by_key(SPREADSHEET_ID).get_worksheet(0)
                     ws.clear()
                     ws.update([df_sheets.columns.values.tolist()] + df_sheets.values.tolist(), value_input_option='USER_ENTERED')
@@ -120,7 +119,7 @@ if st.button("🚀 Run Complete Process"):
 
             status.update(label="Complete!", state="complete")
 
-            # 6. DOWNLOAD BUTTONS (EXCEL)
+            # 6. DOWNLOAD BUTTONS (Both Excel Files)
             st.write("### 📥 Download Results")
             c1, c2 = st.columns(2)
             
