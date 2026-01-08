@@ -47,16 +47,19 @@ def fetch_sales(token, card):
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             prices = [h.get('price') for h in hits if h.get('price')]
-            for i, p in enumerate(prices[:3]):
-                res_data[f'sale{i+1}_price'] = p
+            # Explicitly map the last 3 sales
+            for i in range(3):
+                if i < len(prices):
+                    res_data[f'sale{i+1}_price'] = prices[i]
+            
             if prices:
                 res_data['avg_last_3_sales'] = round(sum(prices)/len(prices), 2)
     except: pass
     return res_data
 
 # ==================== INTERFACE ====================
-st.set_page_config(page_title="Card Ladder Pro Scraper", layout="wide")
-st.title("📊 Card Ladder Scraper (Excel & Sheets)")
+st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
+st.title("📊 Card Ladder Scraper (Full & Filtered Excel)")
 
 with st.sidebar:
     token = st.text_area("Bearer Token")
@@ -70,40 +73,24 @@ if st.button("🚀 Run Complete Process"):
     else:
         with st.status("Processing...") as status:
             # 1. Fetch Collection
-            status.write("📡 Connecting to API...")
-            headers = {
-                'authorization': f"Bearer {token}" if "Bearer" not in token else token,
-                'accept': 'application/json'
-            }
+            headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token, 'accept': 'application/json'}
+            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, 
+                               params={'index': 'collectioncards', 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'})
             
-            res = requests.get(
-                'https://search-zzvl7ri3bq-uc.a.run.app/search', 
-                headers=headers, 
-                params={'index': 'collectioncards', 'limit': limit, 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'}
-            )
-            
-            # --- ERROR HANDLING FOR JSON ERROR ---
             if res.status_code != 200:
-                st.error(f"API Error ({res.status_code}): Your token might be expired or the Collection ID is wrong.")
+                st.error(f"API Error: {res.status_code}. Check token.")
                 st.stop()
             
-            try:
-                data = res.json()
-                cards = data.get('hits', [])
-            except Exception as e:
-                st.error("The server did not send back valid data. Please check your token.")
-                st.stop()
-            # ---------------------------------------
-
-            if not cards:
-                st.warning("No cards found in this collection.")
-                st.stop()
-
+            cards = res.json().get('hits', [])
+            
             # 2. Fetch Sales
             status.write(f"✅ Found {len(cards)} cards. Fetching sales data...")
             with ThreadPoolExecutor(max_workers=threads) as exe:
                 sales_results = list(exe.map(lambda c: fetch_sales(token, c), cards))
-            for i, s in enumerate(sales_results): cards[i].update(s)
+            
+            # Merge sales results into card data
+            for i, s in enumerate(sales_results): 
+                cards[i].update(s)
 
             # 3. Create Full Dataframe
             df_full = pd.json_normalize(cards)
@@ -113,8 +100,9 @@ if st.button("🚀 Run Complete Process"):
             if 'collectionCardId' in df_full.columns:
                 df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-            # 4. Create Filtered Dataframe
-            filter_cols = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db']
+            # 4. Create Filtered Dataframe (Mirroring your original logic)
+            # Added sale prices back to filtered list as per your original request
+            filter_cols = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db', 'sale1_price', 'sale2_price', 'sale3_price']
             available = [c for c in filter_cols if c in df_full.columns]
             df_filtered = df_full[available].copy()
 
@@ -127,28 +115,25 @@ if st.button("🚀 Run Complete Process"):
                     ws = client.open_by_key(SPREADSHEET_ID).get_worksheet(0)
                     ws.clear()
                     ws.update([df_sheets.columns.values.tolist()] + df_sheets.values.tolist(), value_input_option='USER_ENTERED')
-                    ws.format('A1:Z1', {'textFormat': {'bold': True}, 'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}})
                 except Exception as e:
-                    st.warning(f"Could not update Google Sheets: {e}")
+                    st.warning(f"Google Sheets update failed: {e}")
 
             status.update(label="Complete!", state="complete")
 
             # 6. DOWNLOAD BUTTONS (EXCEL)
             st.write("### 📥 Download Results")
-            col1, col2 = st.columns(2)
+            c1, c2 = st.columns(2)
             
-            # Full Excel
-            buffer_full = io.BytesIO()
-            with pd.ExcelWriter(buffer_full, engine='xlsxwriter') as writer:
+            # Full Data Excel
+            buf_full = io.BytesIO()
+            with pd.ExcelWriter(buf_full, engine='xlsxwriter') as writer:
                 df_full.to_excel(writer, index=False)
-            col1.download_button("📘 Download Full Excel", buffer_full.getvalue(), f"Cardladder_Full_{scrape_date}.xlsx", key="full_ex")
+            c1.download_button("📘 Download Full Excel", buf_full.getvalue(), f"Full_Data_{scrape_date}.xlsx", type="primary")
 
-            # Filtered Excel
-            buffer_filt = io.BytesIO()
-            with pd.ExcelWriter(buffer_filt, engine='xlsxwriter') as writer:
+            # Filtered Data Excel
+            buf_filt = io.BytesIO()
+            with pd.ExcelWriter(buf_filt, engine='xlsxwriter') as writer:
                 df_filtered.to_excel(writer, index=False)
-            col2.download_button("📗 Download Filtered Excel", buffer_filt.getvalue(), f"Filter_Cardladder_{scrape_date}.xlsx", key="filt_ex")
+            c2.download_button("📗 Download Filtered Excel", buf_filt.getvalue(), f"Filtered_Data_{scrape_date}.xlsx")
 
-            st.write("---")
-            st.write("### Filtered Data Preview")
             st.dataframe(df_filtered)
