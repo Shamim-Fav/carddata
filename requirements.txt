@@ -1,6 +1,6 @@
+streamlit
 requests
 pandas
 gspread
 oauth2client
-xlsxwriter
 openpyxl
