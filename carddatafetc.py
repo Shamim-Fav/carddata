@@ -28,6 +28,14 @@ if 'processing' not in st.session_state:
     st.session_state.processing = False
 if 'stop_requested' not in st.session_state:
     st.session_state.stop_requested = False
+if 'log_messages' not in st.session_state:
+    st.session_state.log_messages = []
+if 'progress_value' not in st.session_state:
+    st.session_state.progress_value = 0
+if 'current_phase' not in st.session_state:
+    st.session_state.current_phase = ""
+if 'thread_running' not in st.session_state:
+    st.session_state.thread_running = False
 
 # --- Google Sheets Configuration ---
 GOOGLE_CREDENTIALS =GOOGLE_CREDENTIALS ={
@@ -168,7 +176,7 @@ with st.sidebar:
     # Max Threads
     max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
     
-    # How many records - KEPT THIS PART
+    # How many records
     st.divider()
     st.header("📊 Records Selection")
     record_option = st.radio("How many records?", ["All Records", "Specific Number"])
@@ -183,11 +191,18 @@ with st.sidebar:
     # Google Sheets toggle
     use_google_sheets = st.checkbox("Save to Google Sheets", value=True)
     
+    st.divider()
     # Clear Data Button
-    if st.button("🗑️ Clear All Data"):
+    if st.button("🗑️ Clear All Data", use_container_width=True):
         st.session_state.full_data = []
         st.session_state.total_found = 0
         st.session_state.sales_data_processed = 0
+        st.session_state.log_messages = []
+        st.session_state.progress_value = 0
+        st.session_state.current_phase = ""
+        st.session_state.processing = False
+        st.session_state.stop_requested = False
+        st.session_state.thread_running = False
         st.rerun()
 
 # --- Main UI ---
@@ -198,50 +213,52 @@ st.info("This tool fetches cards from collection and their last 3 sales data.")
 status_col1, status_col2, status_col3 = st.columns(3)
 with status_col1:
     if st.session_state.processing:
-        status_placeholder = st.success("🔄 Processing...")
+        st.success(f"🔄 {st.session_state.current_phase}")
+    elif st.session_state.full_data:
+        st.success("✅ Process Complete!")
     else:
-        status_placeholder = st.info("Ready to start")
+        st.info("Ready to start")
+        
 with status_col2:
-    progress_placeholder = st.empty()
+    if st.session_state.processing:
+        progress_bar = st.progress(st.session_state.progress_value)
+    else:
+        progress_bar = st.progress(0)
+        
 with status_col3:
     if st.session_state.stop_requested:
         st.warning("🛑 Stop requested")
 
 # Log display
-log_expander = st.expander("📝 Processing Log", expanded=False)
-log_container = log_expander.empty()
+log_expander = st.expander("📝 Processing Log", expanded=True)
+with log_expander:
+    if st.session_state.log_messages:
+        st.text_area("", value="\n".join(st.session_state.log_messages[-20:]), 
+                    height=200, label_visibility="collapsed")
+    else:
+        st.info("Log will appear here when processing starts")
 
 # Control Buttons
-col1, col2, col3 = st.columns([2, 1, 1])
+col1, col2 = st.columns([2, 1])
 with col1:
-    start_button = st.button("🚀 Start Complete Process", key="start", use_container_width=True, 
-                           type="primary", disabled=st.session_state.processing)
+    start_button = st.button("🚀 Start Complete Process", 
+                           key="start", 
+                           use_container_width=True, 
+                           type="primary", 
+                           disabled=st.session_state.processing)
 with col2:
-    stop_button = st.button("⏹️ Stop Process", key="stop", use_container_width=True,
+    stop_button = st.button("⏹️ Stop Process", 
+                          key="stop", 
+                          use_container_width=True,
                           disabled=not st.session_state.processing)
-with col3:
-    if start_button:
-        st.session_state.processing = True
-        st.session_state.stop_requested = False
-
-if stop_button:
-    st.session_state.stop_requested = True
 
 # --- Functions ---
 def log_message(message):
     """Add message to log"""
-    if 'log_messages' not in st.session_state:
-        st.session_state.log_messages = []
     st.session_state.log_messages.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
     # Keep only last 100 messages
     if len(st.session_state.log_messages) > 100:
         st.session_state.log_messages = st.session_state.log_messages[-100:]
-
-def update_log_display():
-    """Update log display in UI"""
-    if 'log_messages' in st.session_state and st.session_state.log_messages:
-        log_container.text_area("", value="\n".join(st.session_state.log_messages[-20:]), 
-                              height=200, label_visibility="collapsed")
 
 def fetch_collection_data():
     """Phase 1: Fetch all cards from collection"""
@@ -257,6 +274,7 @@ def fetch_collection_data():
     }
     
     log_message("=== PHASE 1: Fetching Collection ===")
+    st.session_state.current_phase = "Phase 1: Fetching collection..."
     
     try:
         while True and not st.session_state.stop_requested:
@@ -419,6 +437,7 @@ def fetch_sales_for_all_cards(cards):
         return 0, []
     
     log_message(f"\n=== PHASE 2: Fetching Last 3 Sales ===")
+    st.session_state.current_phase = "Phase 2: Fetching sales data..."
     
     total_cards = len(cards)
     sales_success = 0
@@ -461,7 +480,7 @@ def fetch_sales_for_all_cards(cards):
             
             # Update progress
             progress = (completed / total_cards) * 100
-            progress_placeholder.progress(progress / 100)
+            st.session_state.progress_value = progress / 100
             
             # Rate limiting
             time.sleep(0.2)
@@ -533,24 +552,35 @@ def save_to_google_sheets(df_full, df_filtered, sales_success):
 def run_complete_process():
     """Run the complete two-phase process"""
     try:
+        # Clear previous data
+        st.session_state.full_data = []
+        st.session_state.sales_data_processed = 0
+        st.session_state.progress_value = 0
+        
         # Phase 1: Fetch collection
         log_message("Starting Phase 1: Fetching collection data...")
+        st.session_state.current_phase = "Phase 1: Fetching collection..."
         collection_cards = fetch_collection_data()
         
         if not collection_cards or st.session_state.stop_requested:
             log_message("Process stopped or no cards found")
             st.session_state.processing = False
+            st.session_state.thread_running = False
             return
         
         log_message(f"✅ Phase 1 Complete: Collected {len(collection_cards)} cards")
         
         # Phase 2: Fetch sales data
         log_message("Starting Phase 2: Fetching sales data...")
+        st.session_state.current_phase = "Phase 2: Fetching sales data..."
+        st.session_state.progress_value = 0
+        
         sales_success, processed_cards = fetch_sales_for_all_cards(collection_cards)
         
         if st.session_state.stop_requested:
             log_message("Process stopped by user")
             st.session_state.processing = False
+            st.session_state.thread_running = False
             return
         
         st.session_state.full_data = processed_cards
@@ -606,28 +636,50 @@ def run_complete_process():
                 success_rate = (sales_success / len(processed_cards)) * 100
                 log_message(f"✅ Success rate: {success_rate:.1f}%")
         
+        st.session_state.current_phase = "Process Complete!"
+        st.session_state.progress_value = 1.0
         st.session_state.processing = False
+        st.session_state.thread_running = False
         
     except Exception as e:
         log_message(f"❌ Process Error: {str(e)}")
         st.session_state.processing = False
+        st.session_state.thread_running = False
 
-# --- Start Processing ---
+# --- Handle Start Button ---
 if start_button and token_input and not st.session_state.processing:
-    if 'log_messages' in st.session_state:
-        st.session_state.log_messages = []
-    log_message("Starting complete scraper process...")
+    # Reset state
+    st.session_state.full_data = []
+    st.session_state.sales_data_processed = 0
+    st.session_state.log_messages = []
+    st.session_state.progress_value = 0
+    st.session_state.current_phase = ""
+    st.session_state.processing = True
+    st.session_state.stop_requested = False
+    st.session_state.thread_running = True
     
     # Start processing in a separate thread
     thread = threading.Thread(target=run_complete_process)
     thread.daemon = True
     thread.start()
+    
+    # Show immediate feedback
+    st.rerun()
 
-# Update log display
-update_log_display()
+# --- Handle Stop Button ---
+if stop_button and st.session_state.processing:
+    st.session_state.stop_requested = True
+    st.session_state.current_phase = "Stopping..."
+    log_message("⏹️ Stop requested by user")
+
+# --- Auto-refresh while processing ---
+if st.session_state.processing:
+    # Auto-refresh every 2 seconds while processing
+    time.sleep(2)
+    st.rerun()
 
 # --- Data Display & Downloads ---
-if st.session_state.full_data:
+if st.session_state.full_data and not st.session_state.processing:
     st.divider()
     
     # Summary Metrics
@@ -708,9 +760,3 @@ if st.session_state.full_data:
     # Data Preview
     st.subheader("👀 Data Preview")
     st.dataframe(df, use_container_width=True, height=400)
-
-# Update status based on processing state
-if st.session_state.processing:
-    status_placeholder.success("🔄 Processing... Please check the log below.")
-elif st.session_state.full_data:
-    status_placeholder.success("✅ Process Complete! Data available for download.")
