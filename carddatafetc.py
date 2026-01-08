@@ -15,27 +15,87 @@ try:
     GOOGLE_SHEETS_AVAILABLE = True
 except ImportError:
     GOOGLE_SHEETS_AVAILABLE = False
-    st.warning("Google Sheets libraries not installed. Run: `pip install gspread google-auth`")
 
-# ==================== YOUR GOOGLE CREDENTIALS ====================
-# WARNING: Use environment variables or Streamlit secrets for production!
-# For now, you can paste your credentials here or use the upload option
-GOOGLE_CREDENTIALS = {
-    "type": "service_account",
-    "project_id": "cardladder",
-    "private_key_id": "3e910525914e6d6fd55c9d3c08f275e755f004a0",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCrEOsApOIkbFk2\nqC+dTy0Pp+AtXoeGLI3xUHqMujmzQJ/eS2t/0\nzJrwdPSeU69otasQlvh/D5yPUw==\n-----END PRIVATE KEY-----\n",
-    "client_email": "cardladder@cardladder.iam.gserviceaccount.com",
-    "client_id": "100678312403939380954",
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/cardladder%40cardladder.iam.gserviceaccount.com",
-    "universe_domain": "googleapis.com"
+# ==================== GOOGLE CREDENTIALS - USING STREAMLIT SECRETS ====================
+# For local development, you can hardcode here. For Streamlit Cloud, use secrets.
+# In Streamlit Cloud: Go to Settings -> Secrets and paste your credentials
+
+def get_google_credentials():
+    """Get Google credentials from Streamlit secrets or local fallback"""
+    try:
+        # Try to get from Streamlit secrets (for Streamlit Cloud)
+        if 'GOOGLE_CREDENTIALS' in st.secrets:
+            return st.secrets['GOOGLE_CREDENTIALS']
+    except:
+        pass
+    
+    # Fallback: Your hardcoded credentials (REMOVE BEFORE DEPLOYING TO CLOUD)
+    # For production, always use Streamlit Secrets
+    GOOGLE_CREDENTIALS = {
+  "type": "service_account",
+  "project_id": "cardladder",
+  "private_key_id": "3e910525914e6d6fd55c9d3c08f275e755f004a0",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCrEOsApOIkbFk2\nqC+dTy0Pp+AtXoeGLI3xUHqMujmzQJ/eS2t/PxPPXUKgDPD4y6zgWCt6/Pen4UUT\nJxxpMCnzkJCclbHYQx1FDTyUIiJg5iAAppfnusFVGO9LM/mHGBTvV8RoRI5u8RXk\nXK+zMsYbm3VR5GBEi1s45E9LOK4A6Rc0CVDkRsgk7Gbii5jYpj+NFVTu1DuNj26a\nGJBDp9+Vk6IBc/uk/4/PDNd9bjkpFOuPJK/SB6c1d3CN3VEYVfFtiltvCl0hhj7U\npqll+Rgukm/GYUSww8lWvnZgTFKOy/ODXEyGri32MWRA7BAPwDk0phTiruX4Gtdb\nQhwku4PvAgMBAAECggEAQNB9KdZPNJu0xae9uq2oFhl2L9p0INs6wKbMeAuLFyay\nK+iJh0HgAJ6GQtwEZU/OZYYim0vDjeEladdUxWoRSw6ILDvvkVAEhAg63ql8OxiW\nIYj9Xzh8TgDPkb/UmGIAdJrdeOAY02IW+FpB2/St6QHi1q9f5jiizJB8lrSYARGw\n6OKq9VfLuNz8g7+iGAigVe6HaN7DFk4o/mVbqVCv0uHwGWyIiXY7+YorG7hMuaVY\nHQUABILi2Y8cp2oQFk6k97IzMlGMkQx8obF8qsnF4Ae7IZYZUG4ucDq/bJK3Ri3v\n4lY03jCG6eWnfjG8Oc/Idm7N1edqEOjRwdLoHp6AMQKBgQDfEI91yqvAdqOlG9oD\nUD+onSzdb0zeD+Y3t9bTHVUGBE9wkokPRektfxpFCdSKhtLD3shQRbYt85FdCMjr\nVUROlI3wsNuj6Opz0GQ+SdLUxtPViD+0MVpGC77SKOEFZXtWCVjcH8xlp+bGQT3H\nd9L7guZ4UObZlGChFH55DKB7eQKBgQDEUueqgAEF6930dhnuHfyp+9PVZQ08rKZo\nNcBaA9rQC7TuBlcFV3CkEeG4J79pOsI5es0BmdXTZpoE+k3Grfpf5zt2O5zk4wb5\n1MLvcT27THgaaNeAKWSt0PNV1B1fPEBq/15OfT1XfidNbhhi+GedPgpAQmzWvrDl\nPvPy6qy4pwKBgQCasThb/s43Lc907Ci3zYooG8AGXG5ZPXtxPnurcpcJEiopLmYA\ngoIfvBpysEuGOdOmZDRUftPFcDlp5HK5ySsSt7DrryrSs+8LnAQ4sieUycIUPmW3\nR9aL5w9RXWoXvPXYh6jpFuA/yz2eVZZLY0ycgX3lCG3fjCeq7bR7rAcLOQKBgQDB\nmdAC/0ADCtpSXLStcLzdFA2N/pzTHJ7tXTRWkD6Tsze1EmN2TQgzg77Hz8qehudJ\nr6PC1GVcl22DQyK3rpGdSXYF3juWK5uRexLQ9ScfMQWvZXw+UpOKJOgR158vb0dH\nPJVPaYm4Yht36/34e2YSVj/dpqOWEW54Y2BGSM4TOQKBgQCxvBuQZAIx2sfGwU1Q\neCRFuTBoYRWirYR3WTo/lK8gRy46uo2rH/V44n9ffnqTMX8y4B46rsQ/0jHeafoB\nQ/ot2lCHfYJDAhk6ElbjukINU5nhDpN+qs8J+xHedBJfQzcxKQYHMRN2M5pu5bT0\nzJrwdPSeU69otasQlvh/D5yPUw==\n-----END PRIVATE KEY-----\n",
+  "client_email": "cardladder@cardladder.iam.gserviceaccount.com",
+  "client_id": "100678312403939380954",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/cardladder%40cardladder.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
 }
 
-# ==================== YOUR SPREADSHEET ID ====================
+    
+    return GOOGLE_CREDENTIALS
+
+# ==================== SPREADSHEET ID ====================
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
+
+# ==================== PAGE CONFIG ====================
+st.set_page_config(
+    page_title="Card Ladder Complete Scraper", 
+    page_icon="📦",
+    layout="wide"
+)
+
+# ==================== SESSION STATE ====================
+if 'full_data' not in st.session_state:
+    st.session_state.full_data = []
+if 'sales_data' not in st.session_state:
+    st.session_state.sales_data = {}
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
+if 'current_phase' not in st.session_state:
+    st.session_state.current_phase = ""
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+if 'stop_requested' not in st.session_state:
+    st.session_state.stop_requested = False
+if 'google_sheets_manager' not in st.session_state:
+    st.session_state.google_sheets_manager = None
+if 'spreadsheet_url' not in st.session_state:
+    st.session_state.spreadsheet_url = ""
+if 'final_df' not in st.session_state:
+    st.session_state.final_df = None
+if 'google_connected' not in st.session_state:
+    st.session_state.google_connected = False
+
+# ==================== HELPER FUNCTIONS ====================
+def add_log(message):
+    """Add message to logs"""
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    st.session_state.logs.append(f"[{timestamp}] {message}")
+    # Keep only last 100 logs
+    if len(st.session_state.logs) > 100:
+        st.session_state.logs = st.session_state.logs[-100:]
+
+def clear_logs():
+    """Clear all logs"""
+    st.session_state.logs = []
+
+def update_status(phase, message):
+    """Update current phase status"""
+    st.session_state.current_phase = f"{phase}: {message}"
 
 # ==================== GOOGLE SHEETS MANAGER ====================
 class GoogleSheetsManager:
@@ -45,31 +105,22 @@ class GoogleSheetsManager:
         self.client = None
         self.connected = False
         
-    def connect(self, credentials_json=None):
+    def connect(self):
         """Connect to Google Sheets API"""
         try:
             if not GOOGLE_SHEETS_AVAILABLE:
                 return False, "Google Sheets libraries not installed"
-            
-            # Use provided credentials or default
-            if credentials_json:
-                try:
-                    self.credentials_dict = json.loads(credentials_json)
-                except:
-                    return False, "Invalid JSON format for credentials"
-            elif not self.credentials_dict:
+                
+            if not self.credentials_dict:
                 return False, "No credentials provided"
             
             # Define the scope
-            scope = [
-                'https://spreadsheets.google.com/feeds',
-                'https://www.googleapis.com/auth/drive'
-            ]
+            scope = ['https://spreadsheets.google.com/feeds',
+                    'https://www.googleapis.com/auth/drive']
             
             # Create credentials from dictionary
             credentials = ServiceAccountCredentials.from_json_keyfile_dict(
-                self.credentials_dict, scope
-            )
+                self.credentials_dict, scope)
             
             # Authorize the client
             self.client = gspread.authorize(credentials)
@@ -90,24 +141,23 @@ class GoogleSheetsManager:
             if self.spreadsheet_id:
                 # Open existing spreadsheet by ID
                 spreadsheet = self.client.open_by_key(self.spreadsheet_id)
-                return spreadsheet, "Opened existing spreadsheet"
             else:
                 # Create new spreadsheet
                 spreadsheet = self.client.create(sheet_name)
                 self.spreadsheet_id = spreadsheet.id
-                return spreadsheet, "Created new spreadsheet"
+            
+            return spreadsheet, "Success"
             
         except Exception as e:
             return None, f"Error accessing sheet: {str(e)}"
     
     def save_dataframe_to_sheet(self, spreadsheet, sheet_name, df, clear_existing=True):
-        """Save pandas DataFrame to Google Sheet - SIMPLE VERSION"""
+        """Save pandas DataFrame to Google Sheet"""
         try:
             # Create a clean DataFrame copy
             df_clean = df.copy()
             
-            # Convert all columns to string type (simplest approach)
-            # This handles arrays, lists, dicts, etc. just like Excel
+            # Convert all columns to string type
             for col in df_clean.columns:
                 # Replace NaN with None first
                 df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
@@ -148,98 +198,18 @@ class GoogleSheetsManager:
         """Get the URL of the spreadsheet"""
         return spreadsheet.url
 
-# ==================== PAGE CONFIG ====================
-st.set_page_config(
-    page_title="Card Ladder Complete Scraper", 
-    page_icon="📦",
-    layout="wide"
-)
-
-# ==================== SESSION STATE ====================
-if 'full_data' not in st.session_state:
-    st.session_state.full_data = []
-if 'sales_data' not in st.session_state:
-    st.session_state.sales_data = {}
-if 'processing' not in st.session_state:
-    st.session_state.processing = False
-if 'current_phase' not in st.session_state:
-    st.session_state.current_phase = ""
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
-if 'stop_requested' not in st.session_state:
-    st.session_state.stop_requested = False
-if 'google_sheets_manager' not in st.session_state:
-    st.session_state.google_sheets_manager = None
-if 'spreadsheet_url' not in st.session_state:
-    st.session_state.spreadsheet_url = ""
-if 'final_df' not in st.session_state:
-    st.session_state.final_df = None
-if 'google_connected' not in st.session_state:
-    st.session_state.google_connected = False
-
-# ==================== STYLING ====================
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    .stButton>button { border-radius: 5px; }
-    .stDownloadButton>button { border-radius: 5px; }
-    .log-container {
-        background-color: #1e1e1e;
-        color: #00ff00;
-        padding: 10px;
-        border-radius: 5px;
-        font-family: 'Consolas', monospace;
-        font-size: 12px;
-        max-height: 400px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-    }
-    .phase-box {
-        background-color: #262730;
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 5px solid #00ff88;
-        margin-bottom: 15px;
-    }
-    .google-sheets-box {
-        background-color: #1a1a2e;
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 5px solid #34a853;
-        margin-bottom: 15px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# ==================== HELPER FUNCTIONS ====================
-def add_log(message):
-    """Add message to logs"""
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    st.session_state.logs.append(f"[{timestamp}] {message}")
-    # Keep only last 100 logs
-    if len(st.session_state.logs) > 100:
-        st.session_state.logs = st.session_state.logs[-100:]
-
-def clear_logs():
-    """Clear all logs"""
-    st.session_state.logs = []
-
-def update_status(phase, message):
-    """Update current phase status"""
-    st.session_state.current_phase = f"{phase}: {message}"
-
-def connect_to_google_sheets(credentials_json=None):
+def connect_to_google_sheets():
     """Connect to Google Sheets"""
     try:
+        # Get credentials from secrets or fallback
+        credentials = get_google_credentials()
+        
         st.session_state.google_sheets_manager = GoogleSheetsManager(
-            credentials_dict=GOOGLE_CREDENTIALS,
+            credentials_dict=credentials,
             spreadsheet_id=SPREADSHEET_ID
         )
         
-        if credentials_json:
-            success, message = st.session_state.google_sheets_manager.connect(credentials_json)
-        else:
-            success, message = st.session_state.google_sheets_manager.connect()
+        success, message = st.session_state.google_sheets_manager.connect()
         
         if success:
             st.session_state.google_connected = True
@@ -263,31 +233,20 @@ with st.sidebar:
     st.header("📊 Google Sheets")
     
     if not GOOGLE_SHEETS_AVAILABLE:
-        st.error("Google Sheets libraries not installed. Run: `pip install gspread google-auth`")
+        st.error("Google Sheets libraries not available.")
     else:
-        st.info("Google Sheets integration is enabled")
-        
-        # Option to use custom credentials
-        use_custom_creds = st.checkbox("Use custom credentials (optional)")
-        
-        custom_credentials = ""
-        if use_custom_creds:
-            custom_credentials = st.text_area("Paste custom credentials JSON:", height=200,
-                                            help="Paste your Google Service Account JSON credentials")
+        google_status = st.empty()
         
         if st.button("🔗 Connect to Google Sheets", disabled=st.session_state.google_connected):
-            if custom_credentials:
-                success, message = connect_to_google_sheets(custom_credentials)
-            else:
+            with st.spinner("Connecting to Google Sheets..."):
                 success, message = connect_to_google_sheets()
-            
-            if success:
-                st.success(message)
-            else:
-                st.error(message)
+                if success:
+                    google_status.success("✅ Connected to Google Sheets")
+                else:
+                    google_status.error(f"❌ {message}")
         
         if st.session_state.google_connected:
-            st.success("✅ Connected to Google Sheets")
+            st.success("✅ Google Sheets Connected")
             if st.session_state.spreadsheet_url:
                 st.markdown(f"[📊 Open Spreadsheet]({st.session_state.spreadsheet_url})")
     
@@ -327,12 +286,13 @@ with st.sidebar:
 
 # ==================== MAIN UI ====================
 st.title("📦 Card Ladder Complete Scraper")
-st.markdown("This tool fetches cards from your collection and their last 3 sales data, with Google Sheets export.")
+st.markdown("This tool fetches cards from your collection and their last 3 sales data.")
 
 # Google Sheets Status
 if st.session_state.google_connected:
-    st.markdown('<div class="google-sheets-box">✅ <b>Google Sheets Connected</b> - Data will be saved automatically</div>', 
-                unsafe_allow_html=True)
+    st.success("✅ **Google Sheets Connected** - Data will be saved automatically")
+    if st.session_state.spreadsheet_url:
+        st.markdown(f"[📊 Open Spreadsheet]({st.session_state.spreadsheet_url})")
 
 # --- Status Display ---
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -361,7 +321,7 @@ log_container = st.container()
 with log_container:
     if st.session_state.logs:
         log_text = "\n".join(st.session_state.logs[-20:])
-        st.markdown(f'<div class="log-container">{log_text}</div>', unsafe_allow_html=True)
+        st.code(log_text, language='text')
     else:
         st.info("Logs will appear here when the process starts.")
 
@@ -622,7 +582,7 @@ def fetch_sales_for_all_cards():
     progress_bar.empty()
     return sales_success
 
-# ==================== SAVE RESULTS ====================
+# ==================== SAVE RESULTS TO GOOGLE SHEETS ====================
 def save_results_to_google_sheets(sales_success):
     """Save results to Google Sheets"""
     if not st.session_state.google_connected:
@@ -705,7 +665,7 @@ def save_results_to_google_sheets(sales_success):
                       'Scrape Date', 'Collection ID', 'Mode'],
             'Value': [len(st.session_state.full_data), sales_success,
                      f"{(sales_success/len(st.session_state.full_data))*100:.1f}%" if len(st.session_state.full_data) > 0 else "N/A",
-                     scrape_date_display, collection_id, "TEST" if record_limit else "FULL"]
+                     scrape_date_display, collection_id, "LIMITED" if record_limit else "FULL"]
         }
         df_summary = pd.DataFrame(summary_data)
         
