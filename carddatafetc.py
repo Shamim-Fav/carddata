@@ -167,10 +167,6 @@ with st.sidebar:
     # Collection ID
     coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
     
-    # Test Mode
-    test_mode = st.checkbox("Test Mode", value=True)
-    test_limit = st.number_input("Test Limit (cards)", min_value=1, max_value=100, value=5, 
-                                disabled=not test_mode)
     
     # Max Threads
     max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
@@ -300,11 +296,6 @@ def fetch_collection_data():
             all_cards.extend(hits)
             log_message(f"✅ Page {page}: {len(hits)} cards (Total: {len(all_cards)}/{total})")
             
-            # Apply test limit if in test mode
-            if test_mode and len(all_cards) >= test_limit:
-                all_cards = all_cards[:test_limit]
-                log_message(f"⚠️ Test mode: Limiting to {test_limit} cards")
-                break
             
             # Apply record count limit if specified
             if record_count and len(all_cards) >= record_count:
