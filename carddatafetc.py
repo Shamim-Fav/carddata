@@ -192,12 +192,7 @@ with st.sidebar:
     
     coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        test_mode = st.checkbox("Test Mode", value=True)
-    with col2:
-        if test_mode:
-            test_limit = st.number_input("Test Limit", min_value=1, max_value=100, value=5)
+    max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
     
     max_workers = st.slider("Max Threads", min_value=1, max_value=10, value=1)
     
@@ -306,11 +301,6 @@ def fetch_collection():
                 break
                 
             all_cards.extend(hits)
-            
-            # Apply test limit if in test mode
-            if test_mode and len(all_cards) >= test_limit:
-                all_cards = all_cards[:test_limit]
-                break
             
             if len(all_cards) >= total or len(hits) < limit:
                 break
