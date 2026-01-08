@@ -76,10 +76,11 @@ if st.button("🚀 Run Scraper"):
     all_cards = []
     
     with st.status("Processing...") as status:
-        # 1. FETCH CARDS (With Pagination for "All")
+        # --- 1. FETCH CARDS ---
         status.write("📂 Accessing Collection...")
-        headers = {'authorization': f"Bearer {auth_token}" if "Bearer" not in auth_token else auth_token}
+        progress_bar = st.progress(0) # Start progress bar
         
+        headers = {'authorization': f"Bearer {auth_token}" if "Bearer" not in auth_token else auth_token}
         page = 0
         limit_per_request = 50 
         
@@ -99,27 +100,42 @@ if st.button("🚀 Run Scraper"):
             total_available = data.get('totalHits', 0)
             
             all_cards.extend(hits)
-            status.write(f"✅ Downloaded {len(all_cards)} of {total_available} cards...")
+            
+            # Update Progress Bar for Cards
+            current_progress = min(len(all_cards) / total_available, 1.0) if total_available > 0 else 1.0
+            progress_bar.progress(current_progress, text=f"Collected {len(all_cards)} of {total_available} cards")
 
-            # Break if we have everything or hit the user's manual limit
             if len(all_cards) >= total_available or len(all_cards) >= limit or not hits:
                 break
             
             page += 1
-            time.sleep(0.3) # Avoid rate limiting
+            time.sleep(0.3)
 
-        # Trim to exact limit if not "Scrape All"
         cards = all_cards[:limit]
+        progress_bar.empty() # Clear the first progress bar
 
-        # 2. FETCH SALES
-        status.write("📈 Fetching Sales History (this takes longer)...")
-        with ThreadPoolExecutor(max_workers=1) as exe:
-            sales_results = list(exe.map(lambda c: fetch_sales(auth_token, c), cards))
+        # --- 2. FETCH SALES (With Progress) ---
+        status.write("📈 Fetching Sales History...")
+        sales_progress = st.progress(0)
         
+        sales_results = []
+        total_cards = len(cards)
+        
+        # We loop manually to update the progress bar for each card
+        for i, card in enumerate(cards):
+            result = fetch_sales(auth_token, card)
+            sales_results.append(result)
+            
+            # Update Sales Progress Bar
+            p_val = (i + 1) / total_cards
+            sales_progress.progress(p_val, text=f"Processing Card {i+1} of {total_cards}: {card.get('label', 'Unknown')}")
+
         for i, s in enumerate(sales_results):
             cards[i].update(s)
+        
+        sales_progress.empty() # Clear
 
-        # 3. DATAFRAMES
+        # --- 3. DATAFRAMES ---
         df_full = pd.json_normalize(cards)
         scrape_date = datetime.now().strftime("%Y-%m-%d")
         df_full.insert(0, 'Scrape Date', scrape_date)
@@ -129,7 +145,7 @@ if st.button("🚀 Run Scraper"):
         TARGET_COLS = ['Scrape Date', 'Card Unique URL', 'label', 'condition', 'variation', 'player', 'currentValue', 'avg_last_3_sales', 'total_sales_in_db']
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
-        # 4. SYNC TO GOOGLE
+        # --- 4. SYNC TO GOOGLE ---
         status.write("📝 Syncing to Google Sheets...")
         client = get_gspread_client()
         if client:
@@ -161,4 +177,4 @@ if st.button("🚀 Run Scraper"):
         buf_full = io.BytesIO()
         with pd.ExcelWriter(buf_full, engine='openpyxl') as writer:
             df_full.to_excel(writer, index=False)
-        st.download_button("📥 Download FULL Excel", buf_full.getvalue(), f"Full_{scrape_date}.xlsx")
+        st.download_button("📥 Download FULL Excel", buf_full.getvalue(), f"Full_Cards_{scrape_date}.xlsx")
