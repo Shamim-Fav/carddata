@@ -63,7 +63,7 @@ def fetch_sales(token, card):
 
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
-st.title("📊 Card Data Scraper & Sheet Sync")
+st.title("📊 Card Data Scraper")
 
 with st.sidebar:
     st.header("Settings")
