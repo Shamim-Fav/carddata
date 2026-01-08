@@ -138,7 +138,7 @@ class GoogleSheetsManager:
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Card Ladder Complete Scraper",
+    page_title="Card Data Scraper",
     page_icon="📦",
     layout="wide"
 )
@@ -241,7 +241,7 @@ with st.sidebar:
         st.rerun()
 
 # --- Main UI ---
-st.title("📦 Card Ladder Complete Scraper")
+st.title("📦 Card Data Scraper")
 st.info("This tool performs a two-phase scrape: 1) Fetch collection cards, 2) Fetch last 3 sales for each card")
 
 # --- Status Display ---
