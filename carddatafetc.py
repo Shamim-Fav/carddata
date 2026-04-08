@@ -34,12 +34,14 @@ def get_gspread_client():
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
 # ==================== DATA LOGIC ====================
-def fetch_sales(token, card):
+def fetch_sales(token, card, debug=False):
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
     
-    # Use gemRateId for more accurate matching instead of label
+    # Get all possible identifiers for better matching
     gem_rate_id = card.get('gemRateId', '')
+    universal_gem_rate_id = card.get('universalGemRateId', '')
     label = card.get('label', '')
+    card_id = card.get('cardId', '')
     
     res_data = {
         'total_sales_in_db': 0,
@@ -51,54 +53,77 @@ def fetch_sales(token, card):
         'sale2_date': None,
         'sale3_date': None,
         'sale4_date': None,
-        'avg_last_4_sales': 0
+        'avg_last_4_sales': 0,
+        'search_method_used': ''  # To track which search worked
     }
     
     try:
-        # Use gemRateId if available (more accurate), otherwise fall back to label
-        search_query = gem_rate_id if gem_rate_id else label
+        # Try multiple search queries in order of accuracy
+        search_queries = []
+        if universal_gem_rate_id:
+            search_queries.append(('universalGemRateId', universal_gem_rate_id))
+        if gem_rate_id:
+            search_queries.append(('gemRateId', gem_rate_id))
+        if card_id:
+            search_queries.append(('cardId', card_id))
+        if label:
+            search_queries.append(('label', label))
         
-        # Get more sales to ensure we have the most recent ones
-        params = {
-            'index': 'salesarchive', 
-            'query': search_query, 
-            'limit': 50,  # Get more sales to ensure we capture all recent ones
-            'sort': 'date', 
-            'direction': 'desc'
-        }
-        
-        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
-        
-        if res.status_code == 200:
-            data = res.json()
-            hits = data.get('hits', [])
-            res_data['total_sales_in_db'] = data.get('totalHits', 0)
+        for query_name, search_query in search_queries:
+            params = {
+                'index': 'salesarchive',
+                'query': search_query,
+                'limit': 50,  # Get more sales to ensure we have recent ones
+                'sort': 'date',
+                'direction': 'desc'
+            }
             
-            # Extract ALL valid sales with prices
-            valid_sales = []
-            for hit in hits:
-                price = hit.get('price')
-                date = hit.get('date')
-                if price is not None and price > 0:
-                    valid_sales.append({
-                        'price': price,
-                        'date': date
-                    })
+            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                              headers=headers, params=params, timeout=10)
             
-            # Take the first 4 (already sorted by date descending from API)
-            for i in range(min(4, len(valid_sales))):
-                res_data[f'sale{i+1}_price'] = valid_sales[i]['price']
-                res_data[f'sale{i+1}_date'] = valid_sales[i]['date']
-            
-            # Calculate average of up to 4 sales
-            prices = [s['price'] for s in valid_sales[:4]]
-            if prices:
-                res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
+            if res.status_code == 200:
+                data = res.json()
+                hits = data.get('hits', [])
                 
-            # Debug warning if less than 4 sales found
-            if len(valid_sales) < 4:
-                st.write(f"⚠️ Warning: Only found {len(valid_sales)} sales for {label[:50]}...")
-                
+                if hits:
+                    # Found sales with this query
+                    valid_sales = []
+                    for hit in hits:
+                        price = hit.get('price')
+                        date = hit.get('date')
+                        if price is not None and price > 0:
+                            valid_sales.append({
+                                'price': price,
+                                'date': date
+                            })
+                    
+                    if valid_sales:
+                        # Debug output for specific card to see what's happening
+                        if debug and label == "2023 Pokemon Sword and Shield Crown Zenith 160 Full Art/pikachu":
+                            st.write(f"🔍 Debug - Using {query_name}: {search_query[:50]}...")
+                            st.write(f"🔍 Debug - Found {len(valid_sales)} total sales")
+                            st.write(f"🔍 Debug - Most recent sale date: {valid_sales[0]['date']}")
+                            st.write(f"🔍 Debug - Most recent sale price: ${valid_sales[0]['price']}")
+                            if len(valid_sales) > 1:
+                                st.write(f"🔍 Debug - 2nd most recent: ${valid_sales[1]['price']} on {valid_sales[1]['date']}")
+                            if len(valid_sales) > 2:
+                                st.write(f"🔍 Debug - 3rd most recent: ${valid_sales[2]['price']} on {valid_sales[2]['date']}")
+                            if len(valid_sales) > 3:
+                                st.write(f"🔍 Debug - 4th most recent: ${valid_sales[3]['price']} on {valid_sales[3]['date']}")
+                        
+                        # Take first 4 (most recent by date - API already sorted)
+                        for i in range(min(4, len(valid_sales))):
+                            res_data[f'sale{i+1}_price'] = valid_sales[i]['price']
+                            res_data[f'sale{i+1}_date'] = valid_sales[i]['date']
+                        
+                        prices = [s['price'] for s in valid_sales[:4]]
+                        res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
+                        res_data['total_sales_in_db'] = data.get('totalHits', 0)
+                        res_data['search_method_used'] = query_name
+                        
+                        # Success! Break out of the loop
+                        break
+                        
     except Exception as e:
         st.write(f"Error fetching sales: {e}")
     
@@ -119,6 +144,8 @@ with st.sidebar:
     else:
         st.info("Will fetch entire collection.")
         limit = 50000  # High safety limit
+    
+    debug_mode = st.checkbox("Debug Mode (shows search details for problem cards)", value=False)
 
 if st.button("🚀 Start Scrape"):
     if not auth_token:
@@ -176,7 +203,9 @@ if st.button("🚀 Start Scrape"):
         total_to_process = len(cards)
         
         for i, card in enumerate(cards):
-            s_result = fetch_sales(auth_token, card)
+            # Pass debug flag for specific card
+            is_debug_card = debug_mode and card.get('label', '') == "2023 Pokemon Sword and Shield Crown Zenith 160 Full Art/pikachu"
+            s_result = fetch_sales(auth_token, card, debug=is_debug_card)
             sales_data.append(s_result)
             
             # Update Sales Progress
@@ -210,7 +239,7 @@ if st.button("🚀 Start Scrape"):
             'sale2_price', 'sale2_date', 
             'sale3_price', 'sale3_date',
             'sale4_price', 'sale4_date',
-            'avg_last_4_sales', 'total_sales_in_db'
+            'avg_last_4_sales', 'total_sales_in_db', 'search_method_used'
         ]
         
         # Only include columns that exist in the dataframe
@@ -255,3 +284,10 @@ if st.button("🚀 Start Scrape"):
         with pd.ExcelWriter(buf2, engine='openpyxl') as writer:
             df_full.to_excel(writer, index=False)
         st.download_button("📥 Download FULL Master Excel", buf2.getvalue(), f"Full_Cards_{scrape_date}.xlsx")
+    
+    # Show debug summary if debug mode was on
+    if debug_mode:
+        st.divider()
+        st.subheader("🔍 Debug Summary")
+        st.write("Check the 'search_method_used' column in the data above to see which identifier worked for each card.")
+        st.write("The debug output for the Pikachu card (if in your collection) will appear in the terminal/console.")
