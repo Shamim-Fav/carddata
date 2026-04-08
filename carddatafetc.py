@@ -1,8 +1,3 @@
-TARGET_COLS = [
-    'Scrape Date', 'Card Unique URL', 'label', 'condition', 
-    'variation', 'player', 'currentValue', 'avg_last_3_sales', 
-    'total_sales_in_db'
-]
 import streamlit as st
 import requests
 import pandas as pd
@@ -159,11 +154,11 @@ if st.button("🚀 Start Scrape"):
         if 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-        # Define columns for Google Sheets - NOW INCLUDING INDIVIDUAL SALE PRICES
+        # Define columns for Google Sheets
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
-            'variation', 'player', 'currentValue', 'sale1_price', 'sale2_price',
-            'sale3_price', 'avg_last_3_sales', 'total_sales_in_db'
+            'variation', 'player', 'currentValue', 'avg_last_3_sales', 
+            'total_sales_in_db'
         ]
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
