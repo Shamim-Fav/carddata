@@ -33,29 +33,84 @@ def get_gspread_client():
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
 # ==================== DATA LOGIC ====================
-def get_card_details(token, card_id):
-    """Fetch card details to get gemRateId"""
+def fetch_sales_directly_by_gem_rate_id(token, gem_rate_id):
+    """Fetch sales directly using gemRateId"""
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
+    
+    res_data = {
+        'total_sales_in_db': 0,
+        'sale1_price': None,
+        'sale2_price': None,
+        'sale3_price': None,
+        'sale4_price': None,
+        'sale1_date': None,
+        'sale2_date': None,
+        'sale3_date': None,
+        'sale4_date': None,
+        'avg_last_4_sales': 0
+    }
     
     try:
-        # Try to get card details from the card endpoint
-        url = f"https://api.cardladder.com/api/cards/{card_id}"
-        res = requests.get(url, headers=headers, timeout=10)
+        params = {
+            'index': 'salesarchive',
+            'query': gem_rate_id,
+            'limit': 50,
+            'sort': 'date',
+            'direction': 'desc'
+        }
+        
+        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                          headers=headers, params=params, timeout=10)
         
         if res.status_code == 200:
-            card_data = res.json()
-            return card_data.get('gemRateId', '')
-    except:
-        pass
+            data = res.json()
+            hits = data.get('hits', [])
+            res_data['total_sales_in_db'] = data.get('totalHits', 0)
+            
+            valid_sales = []
+            for hit in hits:
+                price = hit.get('price')
+                date = hit.get('date')
+                if price is not None and price > 0:
+                    valid_sales.append({'price': price, 'date': date})
+            
+            for i in range(min(4, len(valid_sales))):
+                res_data[f'sale{i+1}_price'] = valid_sales[i]['price']
+                res_data[f'sale{i+1}_date'] = valid_sales[i]['date']
+            
+            prices = [s['price'] for s in valid_sales[:4]]
+            if prices:
+                res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
+                
+    except Exception as e:
+        st.write(f"Error fetching sales: {e}")
     
-    return ''
+    return res_data
 
 def fetch_sales(token, card, debug=False):
+    """Main function to fetch sales for a card"""
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
     
-    # Get cardId from the collection card
+    # Try to get gemRateId from various places
+    gem_rate_id = None
+    
+    # Check if gemRateId exists directly
+    if 'gemRateId' in card and card['gemRateId']:
+        gem_rate_id = card['gemRateId']
+    # Check if in nested card object
+    elif 'card' in card and isinstance(card['card'], dict):
+        gem_rate_id = card['card'].get('gemRateId', '')
+    # Check universalGemRateId
+    elif 'universalGemRateId' in card:
+        gem_rate_id = card['universalGemRateId']
+    
     card_id = card.get('cardId', '')
+    if not card_id and 'card' in card and isinstance(card['card'], dict):
+        card_id = card['card'].get('cardId', '')
+    
     label = card.get('label', '')
+    if not label and 'card' in card and isinstance(card['card'], dict):
+        label = card['card'].get('label', '')
     
     res_data = {
         'total_sales_in_db': 0,
@@ -68,19 +123,16 @@ def fetch_sales(token, card, debug=False):
         'sale3_date': None,
         'sale4_date': None,
         'avg_last_4_sales': 0,
-        'search_method_used': 'none'
+        'search_method_used': 'none',
+        'gem_rate_id_used': ''
     }
     
     try:
-        # FIRST: Try to get gemRateId from card details API
-        gem_rate_id = ''
-        if card_id:
-            gem_rate_id = get_card_details(token, card_id)
-            if debug and gem_rate_id:
-                st.write(f"🔍 Found gemRateId for {label[:50]}: {gem_rate_id[:20]}...")
-        
-        # Priority 1: Use gemRateId if found (MOST ACCURATE)
+        # PRIORITY 1: Use gemRateId if available (MOST ACCURATE)
         if gem_rate_id:
+            if debug:
+                st.write(f"🔍 Using gemRateId: {gem_rate_id[:30]}...")
+            
             params = {
                 'index': 'salesarchive',
                 'query': gem_rate_id,
@@ -112,14 +164,20 @@ def fetch_sales(token, card, debug=False):
                         prices = [s['price'] for s in valid_sales[:4]]
                         res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
                         res_data['total_sales_in_db'] = data.get('totalHits', 0)
-                        res_data['search_method_used'] = 'gemRateId (from card details)'
+                        res_data['search_method_used'] = 'gemRateId'
+                        res_data['gem_rate_id_used'] = gem_rate_id[:20] + "..."
                         
                         if debug:
-                            st.success(f"✅ Using gemRateId: Found {len(valid_sales)} sales")
+                            st.success(f"✅ Found {len(valid_sales)} sales using gemRateId")
+                            if valid_sales:
+                                st.write(f"   Most recent: ${valid_sales[0]['price']} on {valid_sales[0]['date']}")
                         return res_data
         
-        # Priority 2: Use cardId directly
+        # PRIORITY 2: Use cardId
         if card_id and not res_data['sale1_price']:
+            if debug:
+                st.write(f"📝 Using cardId: {card_id}")
+            
             params = {
                 'index': 'salesarchive',
                 'query': card_id,
@@ -152,13 +210,13 @@ def fetch_sales(token, card, debug=False):
                         res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
                         res_data['total_sales_in_db'] = data.get('totalHits', 0)
                         res_data['search_method_used'] = 'cardId'
-                        
-                        if debug:
-                            st.info(f"📝 Using cardId: Found {len(valid_sales)} sales")
                         return res_data
         
-        # Priority 3: Fall back to label (least accurate)
+        # PRIORITY 3: Fall back to label
         if label and not res_data['sale1_price']:
+            if debug:
+                st.write(f"⚠️ Using label fallback: {label[:50]}...")
+            
             params = {
                 'index': 'salesarchive',
                 'query': label,
@@ -190,10 +248,7 @@ def fetch_sales(token, card, debug=False):
                         prices = [s['price'] for s in valid_sales[:4]]
                         res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
                         res_data['total_sales_in_db'] = data.get('totalHits', 0)
-                        res_data['search_method_used'] = 'label (fallback)'
-                        
-                        if debug:
-                            st.warning(f"⚠️ Using label fallback: Found {len(valid_sales)} sales")
+                        res_data['search_method_used'] = 'label'
                         return res_data
                         
     except Exception as e:
@@ -211,6 +266,11 @@ with st.sidebar:
     auth_token = st.text_input("Enter Bearer Token", type="password")
     coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
     
+    # Manual gemRateId override option
+    st.subheader("Manual gemRateId Override")
+    use_manual_gem_rate = st.checkbox("Use manual gemRateId for testing")
+    manual_gem_rate_id = st.text_input("Enter gemRateId manually (for testing)", value="fe47b322ab36a4ce1f3aed939003bbcab5bae6ce")
+    
     scrape_all = st.checkbox("Scrape ALL Cards in Collection", value=False)
     if not scrape_all:
         limit = st.number_input("Limit (number of cards)", value=5, min_value=1)
@@ -219,8 +279,6 @@ with st.sidebar:
         limit = 50000
     
     debug_mode = st.checkbox("Debug Mode - Show detailed search info", value=False)
-    
-    st.warning("⚠️ Note: This script makes an extra API call per card to get accurate sales data. This will be slower but more accurate.")
 
 if st.button("🚀 Start Scrape"):
     if not auth_token:
@@ -269,10 +327,21 @@ if st.button("🚀 Start Scrape"):
         cards = all_cards[:limit]
         progress_cards.empty()
 
-        # --- PHASE 2: FETCHING CARD DETAILS AND SALES ---
-        status.write("📈 Fetching card details and sales history...")
-        status.write("⏱️ This will take ~2-3 seconds per card...")
-        
+        # --- PHASE 2: MANUAL OVERRIDE FOR TESTING ---
+        if use_manual_gem_rate and manual_gem_rate_id:
+            status.write("🔧 Using manual gemRateId override for testing...")
+            # Create a test card with the manual gemRateId
+            test_card = {
+                'label': 'Test Card - Manual gemRateId',
+                'cardId': 'test123',
+                'gemRateId': manual_gem_rate_id
+            }
+            # Replace cards list with just the test card
+            cards = [test_card]
+            st.info(f"Testing with manual gemRateId: {manual_gem_rate_id}")
+
+        # --- PHASE 3: FETCHING SALES ---
+        status.write("📈 Fetching Sales History for each card...")
         progress_sales = st.progress(0)
         
         sales_data = []
@@ -281,13 +350,16 @@ if st.button("🚀 Start Scrape"):
         for i, card in enumerate(cards):
             if debug_mode:
                 st.write(f"\n--- Processing card {i+1}/{total_to_process} ---")
+                st.write(f"Card label: {card.get('label', 'Unknown')[:50]}")
+                if 'gemRateId' in card:
+                    st.write(f"Has gemRateId: {card['gemRateId'][:30]}...")
             
             s_result = fetch_sales(auth_token, card, debug=debug_mode)
             sales_data.append(s_result)
             
             s_prog_val = (i + 1) / total_to_process
-            progress_sales.progress(s_prog_val, text=f"Processing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')[:50]}")
-            time.sleep(0.5)  # Delay to avoid rate limiting
+            progress_sales.progress(s_prog_val, text=f"Pricing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')[:50]}")
+            time.sleep(0.2)
         
         # Merge data
         for i, s in enumerate(sales_data):
@@ -295,7 +367,7 @@ if st.button("🚀 Start Scrape"):
             
         progress_sales.empty()
 
-        # --- PHASE 3: PROCESSING DATA ---
+        # --- PHASE 4: PROCESSING DATA ---
         status.write("📊 Processing data...")
         df_full = pd.json_normalize(cards)
         scrape_date = datetime.now().strftime("%Y-%m-%d")
@@ -303,7 +375,7 @@ if st.button("🚀 Start Scrape"):
         
         # Fix URL generation
         if 'cardId' in df_full.columns:
-            df_full.insert(1, 'Card Unique URL', df_full['cardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True"))
+            df_full.insert(1, 'Card Unique URL', df_full['cardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True" if x else "N/A"))
         elif 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True"))
 
@@ -314,13 +386,13 @@ if st.button("🚀 Start Scrape"):
             'sale2_price', 'sale2_date', 
             'sale3_price', 'sale3_date',
             'sale4_price', 'sale4_date',
-            'avg_last_4_sales', 'total_sales_in_db', 'search_method_used'
+            'avg_last_4_sales', 'total_sales_in_db', 'search_method_used', 'gem_rate_id_used'
         ]
         
         existing_cols = [col for col in TARGET_COLS if col in df_full.columns]
         df_filtered = df_full.reindex(columns=existing_cols).fillna('')
 
-        # --- PHASE 4: GOOGLE SHEETS SYNC ---
+        # --- PHASE 5: GOOGLE SHEETS SYNC ---
         status.write("📝 Updating Google Sheets...")
         client = get_gspread_client()
         if client:
