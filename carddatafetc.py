@@ -12,7 +12,6 @@ def get_gspread_client():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         
-        # All required fields are here to prevent the 'client_id' error
         creds_dict = {
             "type": "service_account",
             "project_id": "cardladder",
@@ -45,9 +44,9 @@ def fetch_sales(token, card):
         'sale2_price': None,
         'sale3_price': None,
         'avg_last_3_sales': 0,
-        'raw_sale_prices': '',  # Store as string for Excel/Sheets
-        'sale_dates': '',       # Store dates for debugging
-        'sale_grades': ''       # Store grades if available
+        'raw_sale_prices': '',
+        'sale_dates': '',
+        'sale_grades': ''
     }
     
     try:
@@ -59,7 +58,6 @@ def fetch_sales(token, card):
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             
-            # Collect raw data for debugging
             prices = []
             dates = []
             grades = []
@@ -76,17 +74,14 @@ def fetch_sales(token, card):
                 if grade:
                     grades.append(grade)
             
-            # Store raw data as strings
             res_data['raw_sale_prices'] = ', '.join([str(p) for p in prices]) if prices else 'No sales'
             res_data['sale_dates'] = ', '.join(dates) if dates else 'No dates'
             res_data['sale_grades'] = ', '.join(grades) if grades else 'No grades'
             
-            # Store individual sale prices
             for i in range(3):
                 if i < len(prices):
                     res_data[f'sale{i+1}_price'] = prices[i]
             
-            # Calculate average
             if prices:
                 res_data['avg_last_3_sales'] = round(sum(prices)/len(prices), 2)
                 
@@ -109,7 +104,7 @@ with st.sidebar:
         limit = st.number_input("Limit (number of cards)", value=5, min_value=1)
     else:
         st.info("Will fetch entire collection.")
-        limit = 50000  # High safety limit
+        limit = 50000
 
 if st.button("🚀 Start Scrape"):
     if not auth_token:
@@ -146,7 +141,6 @@ if st.button("🚀 Start Scrape"):
             
             all_cards.extend(hits)
             
-            # Update Progress Bar
             prog_val = min(len(all_cards) / total_available, 1.0) if total_available > 0 else 1.0
             progress_cards.progress(prog_val, text=f"Found {len(all_cards)} of {total_available} cards")
 
@@ -159,47 +153,52 @@ if st.button("🚀 Start Scrape"):
         cards = all_cards[:limit]
         progress_cards.empty()
 
-        # --- PHASE 2: FETCHING SALES (Slow Step) ---
+        # --- PHASE 2: FETCHING SALES ---
         status.write("📈 Fetching Sales History for each card...")
         progress_sales = st.progress(0)
         
-        sales_data = []
+        # Create a new list to store enriched cards
+        enriched_cards = []
         total_to_process = len(cards)
         
         for i, card in enumerate(cards):
-            s_result = fetch_sales(auth_token, card)
-            sales_data.append(s_result)
+            # Fetch sales data
+            sales_data = fetch_sales(auth_token, card)
             
-            # Update Sales Progress
+            # Merge sales data into card
+            enriched_card = card.copy()
+            enriched_card.update(sales_data)
+            enriched_cards.append(enriched_card)
+            
+            # Update Progress
             s_prog_val = (i + 1) / total_to_process
-            progress_sales.progress(s_prog_val, text=f"Pricing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')}")
-        
-        # Merge data
-        for i, s in enumerate(sales_data):
-            cards[i].update(s)
+            progress_sales.progress(s_prog_val, text=f"Processing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')}")
             
         progress_sales.empty()
 
-        # --- PHASE 3: PROCESSING DATA ---
-        df_full = pd.json_normalize(cards)
+        # --- PHASE 3: CREATE DATAFRAME ---
+        df_full = pd.json_normalize(enriched_cards)
         scrape_date = datetime.now().strftime("%Y-%m-%d")
         df_full.insert(0, 'Scrape Date', scrape_date)
         
         if 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-        # Define columns for Google Sheets (Main Tab)
+        # Debug: Show what columns we have
+        st.write("### Debug: Available Columns")
+        st.write([col for col in df_full.columns if 'sale' in col.lower() or 'avg' in col.lower() or 'total_sales' in col.lower()])
+
+        # Define columns for Main Tab
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
             'variation', 'player', 'currentValue', 'avg_last_3_sales', 
             'total_sales_in_db'
         ]
         
-        # Only include columns that exist
         existing_target_cols = [col for col in TARGET_COLS if col in df_full.columns]
         df_filtered = df_full[existing_target_cols].fillna('')
         
-        # --- NEW: Create Raw Data DataFrame for debugging ---
+        # Define columns for Raw Data Tab
         RAW_COLS = [
             'Scrape Date', 'label', 'condition', 'variation', 'player',
             'currentValue', 'total_sales_in_db', 'avg_last_3_sales',
@@ -207,7 +206,6 @@ if st.button("🚀 Start Scrape"):
             'raw_sale_prices', 'sale_dates', 'sale_grades'
         ]
         
-        # Only include columns that exist in df_full
         existing_raw_cols = [col for col in RAW_COLS if col in df_full.columns]
         df_raw = df_full[existing_raw_cols].fillna('')
 
@@ -227,13 +225,16 @@ if st.button("🚀 Start Scrape"):
                 data_to_send = [df_filtered.columns.tolist()] + df_filtered.astype(str).values.tolist()
                 ws_main.update(data_to_send, value_input_option='USER_ENTERED')
                 
-                # Create Raw Sales Data tab for debugging
-                ws_raw = sh.add_worksheet(title="Raw Sales Data", rows="1000", cols="20")
-                raw_data_to_send = [df_raw.columns.tolist()] + df_raw.astype(str).values.tolist()
-                ws_raw.update(raw_data_to_send, value_input_option='USER_ENTERED')
+                # Create Raw Sales Data tab
+                if not df_raw.empty:
+                    ws_raw = sh.add_worksheet(title="Raw Sales Data", rows="1000", cols="20")
+                    raw_data_to_send = [df_raw.columns.tolist()] + df_raw.astype(str).values.tolist()
+                    ws_raw.update(raw_data_to_send, value_input_option='USER_ENTERED')
+                    st.info(f"📊 Raw Sales Data tab created with {len(df_raw)} rows")
+                else:
+                    st.warning("No raw sales data to display")
                 
                 st.success(f"✅ Sync Complete: {len(df_filtered)} cards sent to Google Sheets!")
-                st.info(f"📊 Two tabs created: 'Main Data' (filtered) and 'Raw Sales Data' (debug info)")
                 
             except Exception as e:
                 st.error(f"Google Sheet Error: {e}")
@@ -244,28 +245,30 @@ if st.button("🚀 Start Scrape"):
     st.divider()
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Google Sheet Version (Filtered)")
+        st.subheader("Main Data (Filtered)")
         st.dataframe(df_filtered, height=400)
         
         buf1 = io.BytesIO()
         with pd.ExcelWriter(buf1, engine='openpyxl') as writer:
             df_filtered.to_excel(writer, index=False, sheet_name='Main Data')
-            df_raw.to_excel(writer, index=False, sheet_name='Raw Sales Data')
-        st.download_button("📥 Download Excel (Both Tabs)", buf1.getvalue(), f"Card_Data_{scrape_date}.xlsx")
+            if not df_raw.empty:
+                df_raw.to_excel(writer, index=False, sheet_name='Raw Sales Data')
+        st.download_button("📥 Download Excel", buf1.getvalue(), f"Card_Data_{scrape_date}.xlsx")
 
     with c2:
         st.subheader("Raw Sales Data (Debug)")
-        st.dataframe(df_raw, height=400)
+        if not df_raw.empty:
+            st.dataframe(df_raw, height=400)
+        else:
+            st.warning("No raw sales data available")
 
-    # --- Show warning for suspicious data ---
+    # --- Data Quality Warnings ---
     st.divider()
     st.subheader("⚠️ Data Quality Warnings")
     
-    # Check for suspicious averages - with error handling
-    try:
-        # Check if required columns exist
-        if 'total_sales_in_db' in df_full.columns and 'avg_last_3_sales' in df_full.columns and 'sale1_price' in df_full.columns:
-            # Check for cards with 1 sale but average doesn't match sale price
+    # Check for suspicious averages
+    if 'total_sales_in_db' in df_full.columns and 'avg_last_3_sales' in df_full.columns:
+        if 'sale1_price' in df_full.columns:
             suspicious = df_full[
                 (df_full['total_sales_in_db'] == 1) & 
                 (df_full['avg_last_3_sales'] != df_full['sale1_price'])
@@ -273,13 +276,12 @@ if st.button("🚀 Start Scrape"):
             
             if len(suspicious) > 0:
                 st.warning(f"Found {len(suspicious)} cards with 1 sale but average doesn't match sale price!")
-                # Only show columns that exist
                 cols_to_show = [col for col in ['label', 'total_sales_in_db', 'sale1_price', 'avg_last_3_sales', 'raw_sale_prices'] if col in suspicious.columns]
                 st.dataframe(suspicious[cols_to_show])
             else:
-                st.info("No suspicious averages detected!")
+                st.info("✓ No suspicious averages detected")
         else:
-            st.info("Unable to perform data quality check - missing required columns")
-            
-    except Exception as e:
-        st.warning(f"Could not complete data quality check: {e}")
+            st.info("✓ No single-sale cards found to check")
+    else:
+        st.error("❌ Sales data columns missing from dataframe!")
+        st.write("Available columns:", list(df_full.columns))
