@@ -43,23 +43,46 @@ def fetch_sales(token, card):
         'sale2_price': None,
         'sale3_price': None,
         'sale4_price': None,
+        'sale1_date': None,
+        'sale2_date': None,
+        'sale3_date': None,
+        'sale4_date': None,
         'avg_last_4_sales': 0
     }
     try:
-        params = {'index': 'salesarchive', 'query': label, 'limit': 4, 'sort': 'date', 'direction': 'desc'}
+        # Get more sales to ensure we have enough for filtering
+        params = {'index': 'salesarchive', 'query': label, 'limit': 20, 'sort': 'date', 'direction': 'desc'}
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
+        
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
-            prices = [h.get('price') for h in hits if h.get('price')]
-            for i in range(4):
-                if i < len(prices):
-                    res_data[f'sale{i+1}_price'] = prices[i]
+            
+            # Extract valid sales with prices
+            valid_sales = []
+            for hit in hits:
+                price = hit.get('price')
+                date = hit.get('date')
+                if price is not None and price > 0:  # Only include valid prices
+                    valid_sales.append({
+                        'price': price,
+                        'date': date
+                    })
+            
+            # Take the first 4 (already sorted by date descending from API)
+            for i in range(min(4, len(valid_sales))):
+                res_data[f'sale{i+1}_price'] = valid_sales[i]['price']
+                res_data[f'sale{i+1}_date'] = valid_sales[i]['date']
+            
+            # Calculate average of available sales (up to 4)
+            prices = [s['price'] for s in valid_sales[:4]]
             if prices:
-                res_data['avg_last_4_sales'] = round(sum(prices)/len(prices), 2)
-    except:
-        pass
+                res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
+                
+    except Exception as e:
+        st.write(f"Error fetching sales for {label}: {e}")
+    
     return res_data
 
 # ==================== STREAMLIT UI ====================
@@ -140,6 +163,7 @@ if st.button("🚀 Start Scrape"):
             # Update Sales Progress
             s_prog_val = (i + 1) / total_to_process
             progress_sales.progress(s_prog_val, text=f"Pricing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')}")
+            time.sleep(0.1)  # Small delay to avoid rate limiting
         
         # Merge data
         for i, s in enumerate(sales_data):
@@ -159,14 +183,20 @@ if st.button("🚀 Start Scrape"):
             st.warning("Using collectionCardId as fallback - card URLs may be incorrect for some cards")
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-        # Define columns for Google Sheets (updated to include 4 sales)
+        # Define columns for Google Sheets (includes sale dates)
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
-            'variation', 'player', 'currentValue', 
-            'sale1_price', 'sale2_price', 'sale3_price', 'sale4_price',
+            'variation', 'player', 'currentValue',
+            'sale1_price', 'sale1_date',
+            'sale2_price', 'sale2_date', 
+            'sale3_price', 'sale3_date',
+            'sale4_price', 'sale4_date',
             'avg_last_4_sales', 'total_sales_in_db'
         ]
-        df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
+        
+        # Only include columns that exist in the dataframe
+        existing_cols = [col for col in TARGET_COLS if col in df_full.columns]
+        df_filtered = df_full.reindex(columns=existing_cols).fillna('')
 
         # --- PHASE 4: GOOGLE SHEETS SYNC ---
         status.write("📝 Updating Google Sheets...")
