@@ -36,14 +36,14 @@ SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 def fetch_sales(token, card):
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
     label = card.get('label', '')
-    card_name = card.get('label', 'Unknown')
     
-    res_data = {
+    # Initialize result dictionary
+    result = {
         'total_sales_in_db': 0,
-        'sale1_price': None,
-        'sale2_price': None,
-        'sale3_price': None,
-        'avg_last_3_sales': 0,
+        'sale1_price': '',
+        'sale2_price': '',
+        'sale3_price': '',
+        'avg_last_3_sales': '',
         'raw_sale_prices': '',
         'sale_dates': '',
         'sale_grades': ''
@@ -56,7 +56,7 @@ def fetch_sales(token, card):
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
-            res_data['total_sales_in_db'] = data.get('totalHits', 0)
+            result['total_sales_in_db'] = data.get('totalHits', 0)
             
             prices = []
             dates = []
@@ -67,28 +67,31 @@ def fetch_sales(token, card):
                 sale_date = hit.get('date', '')
                 grade = hit.get('grade', '')
                 
-                if price is not None:
-                    prices.append(price)
+                if price is not None and price != '':
+                    prices.append(float(price))
                 if sale_date:
                     dates.append(sale_date)
                 if grade:
                     grades.append(grade)
             
-            res_data['raw_sale_prices'] = ', '.join([str(p) for p in prices]) if prices else 'No sales'
-            res_data['sale_dates'] = ', '.join(dates) if dates else 'No dates'
-            res_data['sale_grades'] = ', '.join(grades) if grades else 'No grades'
+            # Store raw data
+            result['raw_sale_prices'] = ', '.join([str(p) for p in prices]) if prices else 'No sales'
+            result['sale_dates'] = ', '.join(dates) if dates else 'No dates'
+            result['sale_grades'] = ', '.join(grades) if grades else 'No grades'
             
+            # Store individual prices
             for i in range(3):
                 if i < len(prices):
-                    res_data[f'sale{i+1}_price'] = prices[i]
+                    result[f'sale{i+1}_price'] = prices[i]
             
+            # Calculate average
             if prices:
-                res_data['avg_last_3_sales'] = round(sum(prices)/len(prices), 2)
+                result['avg_last_3_sales'] = round(sum(prices) / len(prices), 2)
                 
     except Exception as e:
-        st.warning(f"Error fetching sales for {card_name}: {e}")
+        st.warning(f"Error fetching sales for {label}: {str(e)[:100]}")
     
-    return res_data
+    return result
 
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
@@ -157,37 +160,44 @@ if st.button("🚀 Start Scrape"):
         status.write("📈 Fetching Sales History for each card...")
         progress_sales = st.progress(0)
         
-        # Create a new list to store enriched cards
-        enriched_cards = []
+        # Create a list to store all card data with sales
+        cards_with_sales = []
         total_to_process = len(cards)
         
         for i, card in enumerate(cards):
-            # Fetch sales data
+            # Get sales data
             sales_data = fetch_sales(auth_token, card)
             
-            # Merge sales data into card
-            enriched_card = card.copy()
-            enriched_card.update(sales_data)
-            enriched_cards.append(enriched_card)
+            # Create a new dictionary combining card and sales data
+            combined_card = {}
+            combined_card.update(card)  # Add all original card data
+            combined_card.update(sales_data)  # Add sales data (will overwrite any conflicts)
+            
+            cards_with_sales.append(combined_card)
             
             # Update Progress
             s_prog_val = (i + 1) / total_to_process
-            progress_sales.progress(s_prog_val, text=f"Processing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')}")
+            progress_sales.progress(s_prog_val, text=f"Processing {i+1}/{total_to_process}: {card.get('label', 'Loading')[:50]}")
             
         progress_sales.empty()
 
         # --- PHASE 3: CREATE DATAFRAME ---
-        df_full = pd.json_normalize(enriched_cards)
+        # Convert to DataFrame
+        df_full = pd.DataFrame(cards_with_sales)
+        
+        # Add scrape date
         scrape_date = datetime.now().strftime("%Y-%m-%d")
         df_full.insert(0, 'Scrape Date', scrape_date)
         
+        # Add URL if collectionCardId exists
         if 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
-
+        
         # Debug: Show what columns we have
-        st.write("### Debug: Available Columns")
-        st.write([col for col in df_full.columns if 'sale' in col.lower() or 'avg' in col.lower() or 'total_sales' in col.lower()])
-
+        st.write("### Debug: Available Sales Columns")
+        sales_cols = [col for col in df_full.columns if 'sale' in col.lower() or 'avg' in col.lower() or 'total_sales' in col.lower()]
+        st.write(sales_cols if sales_cols else "No sales columns found!")
+        
         # Define columns for Main Tab
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
@@ -195,6 +205,7 @@ if st.button("🚀 Start Scrape"):
             'total_sales_in_db'
         ]
         
+        # Only use columns that exist
         existing_target_cols = [col for col in TARGET_COLS if col in df_full.columns]
         df_filtered = df_full[existing_target_cols].fillna('')
         
@@ -207,7 +218,7 @@ if st.button("🚀 Start Scrape"):
         ]
         
         existing_raw_cols = [col for col in RAW_COLS if col in df_full.columns]
-        df_raw = df_full[existing_raw_cols].fillna('')
+        df_raw = df_full[existing_raw_cols].fillna('') if existing_raw_cols else pd.DataFrame()
 
         # --- PHASE 4: GOOGLE SHEETS SYNC ---
         status.write("📝 Updating Google Sheets...")
@@ -225,14 +236,12 @@ if st.button("🚀 Start Scrape"):
                 data_to_send = [df_filtered.columns.tolist()] + df_filtered.astype(str).values.tolist()
                 ws_main.update(data_to_send, value_input_option='USER_ENTERED')
                 
-                # Create Raw Sales Data tab
+                # Create Raw Sales Data tab if we have data
                 if not df_raw.empty:
                     ws_raw = sh.add_worksheet(title="Raw Sales Data", rows="1000", cols="20")
                     raw_data_to_send = [df_raw.columns.tolist()] + df_raw.astype(str).values.tolist()
                     ws_raw.update(raw_data_to_send, value_input_option='USER_ENTERED')
                     st.info(f"📊 Raw Sales Data tab created with {len(df_raw)} rows")
-                else:
-                    st.warning("No raw sales data to display")
                 
                 st.success(f"✅ Sync Complete: {len(df_filtered)} cards sent to Google Sheets!")
                 
@@ -260,7 +269,7 @@ if st.button("🚀 Start Scrape"):
         if not df_raw.empty:
             st.dataframe(df_raw, height=400)
         else:
-            st.warning("No raw sales data available")
+            st.info("No raw sales data available to display")
 
     # --- Data Quality Warnings ---
     st.divider()
@@ -269,19 +278,23 @@ if st.button("🚀 Start Scrape"):
     # Check for suspicious averages
     if 'total_sales_in_db' in df_full.columns and 'avg_last_3_sales' in df_full.columns:
         if 'sale1_price' in df_full.columns:
+            # Convert to numeric for comparison
+            df_full['sale1_price'] = pd.to_numeric(df_full['sale1_price'], errors='coerce')
+            df_full['avg_last_3_sales'] = pd.to_numeric(df_full['avg_last_3_sales'], errors='coerce')
+            
             suspicious = df_full[
                 (df_full['total_sales_in_db'] == 1) & 
                 (df_full['avg_last_3_sales'] != df_full['sale1_price'])
             ]
             
             if len(suspicious) > 0:
-                st.warning(f"Found {len(suspicious)} cards with 1 sale but average doesn't match sale price!")
+                st.warning(f"⚠️ Found {len(suspicious)} cards with 1 sale but average doesn't match sale price!")
                 cols_to_show = [col for col in ['label', 'total_sales_in_db', 'sale1_price', 'avg_last_3_sales', 'raw_sale_prices'] if col in suspicious.columns]
                 st.dataframe(suspicious[cols_to_show])
             else:
-                st.info("✓ No suspicious averages detected")
+                st.success("✓ No suspicious averages detected")
         else:
-            st.info("✓ No single-sale cards found to check")
+            st.info("No single-sale cards found to check")
     else:
         st.error("❌ Sales data columns missing from dataframe!")
-        st.write("Available columns:", list(df_full.columns))
+        st.write("First row of data:", df_full.iloc[0].to_dict() if len(df_full) > 0 else "No data")
