@@ -37,28 +37,62 @@ SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 def fetch_sales(token, card):
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
     label = card.get('label', '')
+    card_name = card.get('label', 'Unknown')
+    
     res_data = {
         'total_sales_in_db': 0,
         'sale1_price': None,
         'sale2_price': None,
         'sale3_price': None,
-        'avg_last_3_sales': 0
+        'avg_last_3_sales': 0,
+        'raw_sale_prices': '',  # Store as string for Excel/Sheets
+        'sale_dates': '',       # Store dates for debugging
+        'sale_grades': ''       # Store grades if available
     }
+    
     try:
         params = {'index': 'salesarchive', 'query': label, 'limit': 3, 'sort': 'date', 'direction': 'desc'}
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
+        
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
-            prices = [h.get('price') for h in hits if h.get('price')]
+            
+            # Collect raw data for debugging
+            prices = []
+            dates = []
+            grades = []
+            
+            for hit in hits:
+                price = hit.get('price')
+                sale_date = hit.get('date', '')
+                grade = hit.get('grade', '')
+                
+                if price:
+                    prices.append(price)
+                if sale_date:
+                    dates.append(sale_date)
+                if grade:
+                    grades.append(grade)
+            
+            # Store raw data as strings
+            res_data['raw_sale_prices'] = ', '.join([str(p) for p in prices]) if prices else 'No sales'
+            res_data['sale_dates'] = ', '.join(dates) if dates else 'No dates'
+            res_data['sale_grades'] = ', '.join(grades) if grades else 'No grades'
+            
+            # Store individual sale prices
             for i in range(3):
                 if i < len(prices):
                     res_data[f'sale{i+1}_price'] = prices[i]
+            
+            # Calculate average
             if prices:
                 res_data['avg_last_3_sales'] = round(sum(prices)/len(prices), 2)
-    except:
-        pass
+                
+    except Exception as e:
+        st.warning(f"Error fetching sales for {card_name}: {e}")
+    
     return res_data
 
 # ==================== STREAMLIT UI ====================
@@ -75,7 +109,7 @@ with st.sidebar:
         limit = st.number_input("Limit (number of cards)", value=5, min_value=1)
     else:
         st.info("Will fetch entire collection.")
-        limit = 50000 # High safety limit
+        limit = 50000  # High safety limit
 
 if st.button("🚀 Start Scrape"):
     if not auth_token:
@@ -154,13 +188,25 @@ if st.button("🚀 Start Scrape"):
         if 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-        # Define columns for Google Sheets
+        # Define columns for Google Sheets (Main Tab)
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
             'variation', 'player', 'currentValue', 'avg_last_3_sales', 
             'total_sales_in_db'
         ]
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
+        
+        # --- NEW: Create Raw Data DataFrame for debugging ---
+        RAW_COLS = [
+            'Scrape Date', 'label', 'condition', 'variation', 'player',
+            'currentValue', 'total_sales_in_db', 'avg_last_3_sales',
+            'sale1_price', 'sale2_price', 'sale3_price',
+            'raw_sale_prices', 'sale_dates', 'sale_grades'
+        ]
+        
+        # Only include columns that exist in df_full
+        existing_raw_cols = [col for col in RAW_COLS if col in df_full.columns]
+        df_raw = df_full[existing_raw_cols].fillna('')
 
         # --- PHASE 4: GOOGLE SHEETS SYNC ---
         status.write("📝 Updating Google Sheets...")
@@ -168,13 +214,24 @@ if st.button("🚀 Start Scrape"):
         if client:
             try:
                 sh = client.open_by_key(SPREADSHEET_ID)
-                ws = sh.sheet1
-                ws.clear()
                 
-                # Convert to list for gspread
+                # Clear existing sheets
+                for worksheet in sh.worksheets():
+                    sh.del_worksheet(worksheet)
+                
+                # Create Main Data tab
+                ws_main = sh.add_worksheet(title="Main Data", rows="1000", cols="20")
                 data_to_send = [df_filtered.columns.tolist()] + df_filtered.astype(str).values.tolist()
-                ws.update(data_to_send, value_input_option='USER_ENTERED')
+                ws_main.update(data_to_send, value_input_option='USER_ENTERED')
+                
+                # Create Raw Sales Data tab for debugging
+                ws_raw = sh.add_worksheet(title="Raw Sales Data", rows="1000", cols="20")
+                raw_data_to_send = [df_raw.columns.tolist()] + df_raw.astype(str).values.tolist()
+                ws_raw.update(raw_data_to_send, value_input_option='USER_ENTERED')
+                
                 st.success(f"✅ Sync Complete: {len(df_filtered)} cards sent to Google Sheets!")
+                st.info(f"📊 Two tabs created: 'Main Data' (filtered) and 'Raw Sales Data' (debug info)")
+                
             except Exception as e:
                 st.error(f"Google Sheet Error: {e}")
 
@@ -189,14 +246,24 @@ if st.button("🚀 Start Scrape"):
         
         buf1 = io.BytesIO()
         with pd.ExcelWriter(buf1, engine='openpyxl') as writer:
-            df_filtered.to_excel(writer, index=False)
-        st.download_button("📥 Download Filtered Excel", buf1.getvalue(), f"Filtered_Cards_{scrape_date}.xlsx")
+            df_filtered.to_excel(writer, index=False, sheet_name='Main Data')
+            df_raw.to_excel(writer, index=False, sheet_name='Raw Sales Data')
+        st.download_button("📥 Download Excel (Both Tabs)", buf1.getvalue(), f"Card_Data_{scrape_date}.xlsx")
 
     with c2:
-        st.subheader("Master File (Full Data)")
-        st.dataframe(df_full, height=400)
-        
-        buf2 = io.BytesIO()
-        with pd.ExcelWriter(buf2, engine='openpyxl') as writer:
-            df_full.to_excel(writer, index=False)
-        st.download_button("📥 Download FULL Master Excel", buf2.getvalue(), f"Full_Cards_{scrape_date}.xlsx")
+        st.subheader("Raw Sales Data (Debug)")
+        st.dataframe(df_raw, height=400)
+
+    # --- Show warning for suspicious data ---
+    st.divider()
+    st.subheader("⚠️ Data Quality Warnings")
+    
+    # Check for suspicious averages
+    suspicious = df_full[
+        (df_full['total_sales_in_db'] == 1) & 
+        (df_full['avg_last_3_sales'] != df_full['sale1_price'])
+    ]
+    
+    if len(suspicious) > 0:
+        st.warning(f"Found {len(suspicious)} cards with 1 sale but average doesn't match sale price!")
+        st.dataframe(suspicious[['label', 'total_sales_in_db', 'sale1_price', 'avg_last_3_sales', 'raw_sale_prices']])
