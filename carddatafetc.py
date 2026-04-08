@@ -69,7 +69,7 @@ def fetch_sales(token, card):
                 sale_date = hit.get('date', '')
                 grade = hit.get('grade', '')
                 
-                if price:
+                if price is not None:
                     prices.append(price)
                 if sale_date:
                     dates.append(sale_date)
@@ -194,7 +194,10 @@ if st.button("🚀 Start Scrape"):
             'variation', 'player', 'currentValue', 'avg_last_3_sales', 
             'total_sales_in_db'
         ]
-        df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
+        
+        # Only include columns that exist
+        existing_target_cols = [col for col in TARGET_COLS if col in df_full.columns]
+        df_filtered = df_full[existing_target_cols].fillna('')
         
         # --- NEW: Create Raw Data DataFrame for debugging ---
         RAW_COLS = [
@@ -258,12 +261,25 @@ if st.button("🚀 Start Scrape"):
     st.divider()
     st.subheader("⚠️ Data Quality Warnings")
     
-    # Check for suspicious averages
-    suspicious = df_full[
-        (df_full['total_sales_in_db'] == 1) & 
-        (df_full['avg_last_3_sales'] != df_full['sale1_price'])
-    ]
-    
-    if len(suspicious) > 0:
-        st.warning(f"Found {len(suspicious)} cards with 1 sale but average doesn't match sale price!")
-        st.dataframe(suspicious[['label', 'total_sales_in_db', 'sale1_price', 'avg_last_3_sales', 'raw_sale_prices']])
+    # Check for suspicious averages - with error handling
+    try:
+        # Check if required columns exist
+        if 'total_sales_in_db' in df_full.columns and 'avg_last_3_sales' in df_full.columns and 'sale1_price' in df_full.columns:
+            # Check for cards with 1 sale but average doesn't match sale price
+            suspicious = df_full[
+                (df_full['total_sales_in_db'] == 1) & 
+                (df_full['avg_last_3_sales'] != df_full['sale1_price'])
+            ]
+            
+            if len(suspicious) > 0:
+                st.warning(f"Found {len(suspicious)} cards with 1 sale but average doesn't match sale price!")
+                # Only show columns that exist
+                cols_to_show = [col for col in ['label', 'total_sales_in_db', 'sale1_price', 'avg_last_3_sales', 'raw_sale_prices'] if col in suspicious.columns]
+                st.dataframe(suspicious[cols_to_show])
+            else:
+                st.info("No suspicious averages detected!")
+        else:
+            st.info("Unable to perform data quality check - missing required columns")
+            
+    except Exception as e:
+        st.warning(f"Could not complete data quality check: {e}")
