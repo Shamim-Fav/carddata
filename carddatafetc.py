@@ -36,7 +36,11 @@ SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 # ==================== DATA LOGIC ====================
 def fetch_sales(token, card):
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
+    
+    # Use gemRateId for more accurate matching instead of label
+    gem_rate_id = card.get('gemRateId', '')
     label = card.get('label', '')
+    
     res_data = {
         'total_sales_in_db': 0,
         'sale1_price': None,
@@ -49,9 +53,20 @@ def fetch_sales(token, card):
         'sale4_date': None,
         'avg_last_4_sales': 0
     }
+    
     try:
-        # Get more sales to ensure we have enough for filtering
-        params = {'index': 'salesarchive', 'query': label, 'limit': 20, 'sort': 'date', 'direction': 'desc'}
+        # Use gemRateId if available (more accurate), otherwise fall back to label
+        search_query = gem_rate_id if gem_rate_id else label
+        
+        # Get more sales to ensure we have the most recent ones
+        params = {
+            'index': 'salesarchive', 
+            'query': search_query, 
+            'limit': 50,  # Get more sales to ensure we capture all recent ones
+            'sort': 'date', 
+            'direction': 'desc'
+        }
+        
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
         
         if res.status_code == 200:
@@ -59,12 +74,12 @@ def fetch_sales(token, card):
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             
-            # Extract valid sales with prices
+            # Extract ALL valid sales with prices
             valid_sales = []
             for hit in hits:
                 price = hit.get('price')
                 date = hit.get('date')
-                if price is not None and price > 0:  # Only include valid prices
+                if price is not None and price > 0:
                     valid_sales.append({
                         'price': price,
                         'date': date
@@ -75,13 +90,17 @@ def fetch_sales(token, card):
                 res_data[f'sale{i+1}_price'] = valid_sales[i]['price']
                 res_data[f'sale{i+1}_date'] = valid_sales[i]['date']
             
-            # Calculate average of available sales (up to 4)
+            # Calculate average of up to 4 sales
             prices = [s['price'] for s in valid_sales[:4]]
             if prices:
                 res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
                 
+            # Debug warning if less than 4 sales found
+            if len(valid_sales) < 4:
+                st.write(f"⚠️ Warning: Only found {len(valid_sales)} sales for {label[:50]}...")
+                
     except Exception as e:
-        st.write(f"Error fetching sales for {label}: {e}")
+        st.write(f"Error fetching sales: {e}")
     
     return res_data
 
