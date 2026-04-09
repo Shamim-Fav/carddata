@@ -35,8 +35,10 @@ SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
 # ==================== DATA LOGIC ====================
 def fetch_sales(token, card):
+    """Fetch last 4 sales using FULL LABEL search for accuracy"""
     headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
     label = card.get('label', '')
+    
     res_data = {
         'total_sales_in_db': 0,
         'sale1_price': None,
@@ -47,46 +49,67 @@ def fetch_sales(token, card):
         'sale3_date': None,
         'sale4_price': None,
         'sale4_date': None,
-        'avg_last_4_sales': 0
+        'avg_last_4_sales': 0,
+        'search_method': 'Full Label'
     }
+    
     try:
-        params = {'index': 'salesarchive', 'query': label, 'limit': 4, 'sort': 'date', 'direction': 'desc'}
-        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
+        # Using FULL LABEL for most accurate results
+        params = {
+            'index': 'salesarchive', 
+            'query': label,  # Full label search
+            'limit': 4, 
+            'sort': 'date', 
+            'direction': 'desc'
+        }
+        
+        res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                          headers=headers, 
+                          params=params, 
+                          timeout=10)
+        
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             
+            # Extract price and date for each sale
             for i in range(4):
                 if i < len(hits):
                     hit = hits[i]
                     res_data[f'sale{i+1}_price'] = hit.get('price')
                     res_data[f'sale{i+1}_date'] = hit.get('date')
             
+            # Calculate average of last 4 sales (or fewer if not enough)
             prices = [hit.get('price') for hit in hits if hit.get('price')]
             if prices:
-                res_data['avg_last_4_sales'] = round(sum(prices)/len(prices), 2)
-    except:
-        pass
+                res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
+                
+    except Exception as e:
+        st.warning(f"Error fetching sales for {label[:50]}: {str(e)[:100]}")
+        
     return res_data
 
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
-st.title("🕰️ Card Data Scraper")
+st.title("🕰️ Card Data Scraper - Full Label Search")
 
 with st.sidebar:
     st.header("Settings")
     auth_token = st.text_input("Enter Bearer Token", type="password")
     coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
     
+    st.markdown("---")
+    st.info("🔍 **Using FULL LABEL search** for most accurate sales matching")
+    
     scrape_all = st.checkbox("Scrape ALL Cards in Collection", value=False)
     if not scrape_all:
-        limit = st.number_input("Limit (number of cards)", value=5, min_value=1)
+        limit = st.number_input("Limit (number of cards)", value=5, min_value=1, max_value=100)
     else:
         st.info("Will fetch entire collection.")
-        limit = 50000 # High safety limit
+        limit = 50000
 
-if st.button("🚀 Start Scrape"):
+if st.button("🚀 Start Scrape", type="primary"):
     if not auth_token:
         st.error("Please provide a token!")
         st.stop()
@@ -109,7 +132,9 @@ if st.button("🚀 Start Scrape"):
                 'page': page,
                 'filters': f'collectionId:{coll_id}|hasQuantityAvailable:true'
             }
-            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params)
+            res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', 
+                             headers=headers, 
+                             params=params)
             
             if res.status_code != 200:
                 st.error(f"API Error: {res.status_code}")
@@ -133,21 +158,27 @@ if st.button("🚀 Start Scrape"):
 
         cards = all_cards[:limit]
         progress_cards.empty()
+        
+        st.write(f"✅ Found {len(cards)} cards to process")
 
-        # --- PHASE 2: FETCHING SALES (Slow Step) ---
-        status.write("📈 Fetching Sales History for each card...")
+        # --- PHASE 2: FETCHING SALES USING FULL LABEL ---
+        status.write("📈 Fetching Sales History using FULL LABEL search...")
         progress_sales = st.progress(0)
         
         sales_data = []
         total_to_process = len(cards)
         
         for i, card in enumerate(cards):
+            # Show current card being processed
+            card_label = card.get('label', 'Unknown')
+            status.write(f"Processing {i+1}/{total_to_process}: {card_label[:60]}...")
+            
             s_result = fetch_sales(auth_token, card)
             sales_data.append(s_result)
             
             # Update Sales Progress
             s_prog_val = (i + 1) / total_to_process
-            progress_sales.progress(s_prog_val, text=f"Pricing Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')}")
+            progress_sales.progress(s_prog_val, text=f"Pricing Card {i+1}/{total_to_process}")
         
         # Merge data
         for i, s in enumerate(sales_data):
@@ -156,60 +187,123 @@ if st.button("🚀 Start Scrape"):
         progress_sales.empty()
 
         # --- PHASE 3: PROCESSING DATA ---
+        status.write("📊 Processing data...")
         df_full = pd.json_normalize(cards)
-        scrape_date = datetime.now().strftime("%Y-%m-%d")
+        scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         df_full.insert(0, 'Scrape Date', scrape_date)
         
         if 'collectionCardId' in df_full.columns:
-            df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True"))
+            df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(
+                lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True"))
 
-        # Define columns for Google Sheets
+        # Define columns for Google Sheets (includes all sales data)
         TARGET_COLS = [
-            'Scrape Date', 'Card Unique URL', 'label', 'condition', 
-            'variation', 'player', 'currentValue', 'avg_last_4_sales', 
-            'total_sales_in_db', 
-            'sale1_price', 'sale1_date', 
-            'sale2_price', 'sale2_date', 
-            'sale3_price', 'sale3_date', 
-            'sale4_price', 'sale4_date'
+            'Scrape Date', 
+            'Card Unique URL', 
+            'label', 
+            'condition', 
+            'variation', 
+            'player', 
+            'year',
+            'set',
+            'currentValue', 
+            'avg_last_4_sales', 
+            'total_sales_in_db',
+            'search_method',
+            'sale1_price', 
+            'sale1_date', 
+            'sale2_price', 
+            'sale2_date', 
+            'sale3_price', 
+            'sale3_date', 
+            'sale4_price', 
+            'sale4_date'
         ]
-        df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
+        
+        # Only include columns that exist in the dataframe
+        existing_cols = [col for col in TARGET_COLS if col in df_full.columns]
+        df_filtered = df_full.reindex(columns=existing_cols).fillna('')
 
-        # --- PHASE 4: GOOGLE SHEETS SYNC ---
-        status.write("📝 Updating Google Sheets...")
-        client = get_gspread_client()
-        if client:
-            try:
-                sh = client.open_by_key(SPREADSHEET_ID)
-                ws = sh.sheet1
-                ws.clear()
-                
-                # Convert to list for gspread
-                data_to_send = [df_filtered.columns.tolist()] + df_filtered.astype(str).values.tolist()
-                ws.update(data_to_send, value_input_option='USER_ENTERED')
-                st.success(f"✅ Sync Complete: {len(df_filtered)} cards sent to Google Sheets!")
-            except Exception as e:
-                st.error(f"Google Sheet Error: {e}")
+        # --- PHASE 4: GOOGLE SHEETS SYNC (Optional) ---
+        if st.checkbox("Sync to Google Sheets", value=True):
+            status.write("📝 Updating Google Sheets...")
+            client = get_gspread_client()
+            if client:
+                try:
+                    sh = client.open_by_key(SPREADSHEET_ID)
+                    ws = sh.sheet1
+                    ws.clear()
+                    
+                    # Convert to list for gspread
+                    data_to_send = [df_filtered.columns.tolist()] + df_filtered.astype(str).values.tolist()
+                    ws.update(data_to_send, value_input_option='USER_ENTERED')
+                    st.success(f"✅ Sync Complete: {len(df_filtered)} cards sent to Google Sheets!")
+                except Exception as e:
+                    st.error(f"Google Sheet Error: {e}")
+        else:
+            status.write("⏭️ Skipping Google Sheets sync")
 
         status.update(label="Scrape Finished Successfully!", state="complete")
 
     # --- DOWNLOADS ---
     st.divider()
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Google Sheet Version (Filtered)")
-        st.dataframe(df_filtered, height=400)
+    st.subheader("📥 Download Results")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Cards Processed", len(df_filtered))
         
+    with col2:
+        cards_with_sales = df_filtered[df_filtered['total_sales_in_db'] > 0].shape[0] if 'total_sales_in_db' in df_filtered.columns else 0
+        st.metric("Cards with Sales Data", cards_with_sales)
+        
+    with col3:
+        avg_sales = df_filtered['avg_last_4_sales'].mean() if 'avg_last_4_sales' in df_filtered.columns else 0
+        st.metric("Average Price (Last 4 Sales)", f"${avg_sales:.2f}" if avg_sales > 0 else "N/A")
+    
+    st.divider()
+    
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.subheader("📊 Filtered Data (Google Sheets Version)")
+        st.dataframe(df_filtered, height=400, use_container_width=True)
+        
+        # Excel download
         buf1 = io.BytesIO()
         with pd.ExcelWriter(buf1, engine='openpyxl') as writer:
             df_filtered.to_excel(writer, index=False)
-        st.download_button("📥 Download Filtered Excel", buf1.getvalue(), f"Filtered_Cards_{scrape_date}.xlsx")
+        st.download_button(
+            "📥 Download Filtered Excel", 
+            buf1.getvalue(), 
+            f"Filtered_Cards_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            use_container_width=True
+        )
 
     with c2:
-        st.subheader("Master File (Full Data)")
-        st.dataframe(df_full, height=400)
+        st.subheader("📋 Master File (Full Data)")
         
+        # Show sample of sales data
+        if 'sale1_price' in df_full.columns:
+            sale_cols = ['label', 'sale1_price', 'sale1_date', 'sale2_price', 'sale2_date']
+            existing_sale_cols = [col for col in sale_cols if col in df_full.columns]
+            if existing_sale_cols:
+                st.dataframe(df_full[existing_sale_cols].head(10), height=400, use_container_width=True)
+        else:
+            st.dataframe(df_full.head(10), height=400, use_container_width=True)
+        
+        # Excel download
         buf2 = io.BytesIO()
         with pd.ExcelWriter(buf2, engine='openpyxl') as writer:
             df_full.to_excel(writer, index=False)
-        st.download_button("📥 Download FULL Master Excel", buf2.getvalue(), f"Full_Cards_{scrape_date}.xlsx")
+        st.download_button(
+            "📥 Download FULL Master Excel", 
+            buf2.getvalue(), 
+            f"Full_Cards_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            use_container_width=True
+        )
+
+# Footer
+st.divider()
+st.caption(f"🕒 Last run would show here | Using FULL LABEL search for accurate sales matching | CardLadder Scraper v2.0")
