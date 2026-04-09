@@ -32,10 +32,35 @@ def get_gspread_client():
 
 SPREADSHEET_ID = "1aO5Tk6ulm0bIkgL6FbLLP2ilhBs6_9M_vwLycT9bWnw"
 
-# ==================== DATA LOGIC ====================
-def fetch_sales_by_gem_rate_id(token, gem_rate_id, condition=None):
-    """Fetch sales using gemRateId with filters (MOST ACCURATE - matches website behavior)"""
-    headers = {'authorization': f"Bearer {token}" if "Bearer" not in token else token}
+# ==================== HELPER FUNCTIONS ====================
+def get_card_details(token, card_id, debug=False):
+    """Fetch full card details including gemRateId"""
+    headers = {'authorization': token if "Bearer" in token else f"Bearer {token}"}
+    
+    try:
+        # Try the card details endpoint
+        url = f"https://api.cardladder.com/api/cards/{card_id}"
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        if res.status_code == 200:
+            data = res.json()
+            gem_rate_id = data.get('gemRateId', '')
+            if debug and gem_rate_id:
+                st.write(f"   ✅ Found gemRateId: {gem_rate_id[:30]}...")
+            return gem_rate_id
+        else:
+            if debug:
+                st.write(f"   ⚠️ Card details API returned {res.status_code}")
+                
+    except Exception as e:
+        if debug:
+            st.write(f"   ❌ Error fetching card details: {e}")
+    
+    return ''
+
+def fetch_sales_by_gem_rate_id(token, gem_rate_id, condition, debug=False):
+    """Fetch sales using gemRateId with filters (matches website behavior)"""
+    headers = {'authorization': token if "Bearer" in token else f"Bearer {token}"}
     
     res_data = {
         'total_sales_in_db': 0,
@@ -51,10 +76,13 @@ def fetch_sales_by_gem_rate_id(token, gem_rate_id, condition=None):
     }
     
     try:
+        # Convert condition from 'PSA 9' to 'g9'
+        condition_code = condition.lower().replace('psa ', 'g') if condition else ''
+        
         # Build filters string like the website does
         filters_parts = [f"gemRateId:{gem_rate_id}"]
-        if condition:
-            filters_parts.append(f"condition:{condition}")
+        if condition_code:
+            filters_parts.append(f"condition:{condition_code}")
         
         filters_str = "|".join(filters_parts)
         
@@ -66,6 +94,9 @@ def fetch_sales_by_gem_rate_id(token, gem_rate_id, condition=None):
             'sort': 'date',
             'direction': 'desc'
         }
+        
+        if debug:
+            st.write(f"   🔍 Filters: {filters_str}")
         
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', 
                           headers=headers, params=params, timeout=10)
@@ -86,6 +117,9 @@ def fetch_sales_by_gem_rate_id(token, gem_rate_id, condition=None):
                         'date': date
                     })
             
+            if debug:
+                st.write(f"   📊 Found {len(valid_sales)} valid sales")
+            
             # Take the first 4 (already sorted by date descending)
             for i in range(min(4, len(valid_sales))):
                 res_data[f'sale{i+1}_price'] = valid_sales[i]['price']
@@ -96,23 +130,14 @@ def fetch_sales_by_gem_rate_id(token, gem_rate_id, condition=None):
             if prices:
                 res_data['avg_last_4_sales'] = round(sum(prices) / len(prices), 2)
                 
+            if debug and valid_sales:
+                st.write(f"   💰 Most recent: ${valid_sales[0]['price']} on {valid_sales[0]['date']}")
+                
     except Exception as e:
-        st.write(f"Error fetching sales: {e}")
+        if debug:
+            st.write(f"   ❌ Error fetching sales: {e}")
     
     return res_data
-
-def get_gem_rate_id_from_collection_card(card):
-    """Extract gemRateId from collection card data if available"""
-    # Check if gemRateId exists directly
-    if 'gemRateId' in card and card['gemRateId']:
-        return card['gemRateId']
-    # Check in nested card object
-    if 'card' in card and isinstance(card['card'], dict):
-        return card['card'].get('gemRateId', '')
-    # Check universalGemRateId
-    if 'universalGemRateId' in card:
-        return card['universalGemRateId']
-    return ''
 
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Card Ladder Scraper", layout="wide")
@@ -120,8 +145,11 @@ st.title("🕰️ Card Data Scraper")
 
 with st.sidebar:
     st.header("Settings")
-    auth_token = st.text_input("Enter Bearer Token", type="password")
-    coll_id = st.text_input("Collection ID", value="zKC3o1sfYEcBGNaTPDRn")
+    auth_token = st.text_input("Enter Bearer Token", type="password", 
+                               help="Paste your Bearer token here (starts with 'Bearer eyJ...')")
+    
+    coll_id = st.text_input("Collection ID", value="em34JGn38x7No7vkwoT5",
+                            help="Your collection ID from the URL")
     
     st.divider()
     
@@ -132,11 +160,15 @@ with st.sidebar:
         st.info("Will fetch entire collection.")
         limit = 50000
     
-    debug_mode = st.checkbox("Debug Mode", value=False)
+    debug_mode = st.checkbox("Debug Mode - Show detailed info", value=True)
 
 if st.button("🚀 Start Scrape"):
     if not auth_token:
-        st.error("Please provide a token!")
+        st.error("Please provide a Bearer Token!")
+        st.stop()
+    
+    if not coll_id:
+        st.error("Please provide a Collection ID!")
         st.stop()
 
     all_cards = []
@@ -144,7 +176,7 @@ if st.button("🚀 Start Scrape"):
     with st.status("Scraping Data...", expanded=True) as status:
         # --- PHASE 1: FETCHING CARD LIST ---
         status.write("📂 Downloading card list...")
-        headers = {'authorization': f"Bearer {auth_token}" if "Bearer" not in auth_token else auth_token}
+        headers = {'authorization': auth_token if "Bearer" in auth_token else f"Bearer {auth_token}"}
         
         page = 0
         limit_per_request = 50 
@@ -161,6 +193,7 @@ if st.button("🚀 Start Scrape"):
             
             if res.status_code != 200:
                 st.error(f"API Error: {res.status_code}")
+                st.write(f"Response: {res.text}")
                 break
             
             data = res.json()
@@ -180,64 +213,79 @@ if st.button("🚀 Start Scrape"):
 
         cards = all_cards[:limit]
         progress_cards.empty()
+        
+        st.write(f"✅ Retrieved {len(cards)} cards from collection")
 
-        # --- PHASE 2: FETCHING SALES USING FILTERS ---
-        status.write("📈 Fetching Sales History for each card...")
-        status.write("🔍 Using gemRateId filters (exactly like website)")
+        # --- PHASE 2: FETCH GEMRATEID AND SALES ---
+        status.write("📈 Fetching gemRateId and sales for each card...")
+        status.write("⏱️ This takes ~2-3 seconds per card...")
         
         progress_sales = st.progress(0)
-        sales_data = []
         total_to_process = len(cards)
         
         for i, card in enumerate(cards):
-            # Try to get gemRateId from the card data
-            gem_rate_id = get_gem_rate_id_from_collection_card(card)
-            condition = card.get('condition', '').replace('g', '')  # Convert 'g9' to '9' or keep as is
+            card_id = card.get('cardId', '')
+            label = card.get('label', 'Unknown')[:50]
+            condition = card.get('condition', '')
             
             if debug_mode:
-                st.write(f"\n--- Card {i+1}: {card.get('label', 'Unknown')[:50]} ---")
-                st.write(f"gemRateId: {gem_rate_id}")
-                st.write(f"Condition: {condition}")
+                st.write(f"\n--- Card {i+1}/{total_to_process}: {label} ---")
+                st.write(f"   Card ID: {card_id}")
+                st.write(f"   Condition: {condition}")
             
-            # Fetch sales using gemRateId with filters
-            if gem_rate_id:
-                s_result = fetch_sales_by_gem_rate_id(auth_token, gem_rate_id, condition)
+            # Step 1: Get gemRateId from card details API
+            if card_id:
+                gem_rate_id = get_card_details(auth_token, card_id, debug_mode)
+                
+                if gem_rate_id:
+                    # Step 2: Fetch sales using gemRateId
+                    sales_result = fetch_sales_by_gem_rate_id(auth_token, gem_rate_id, condition, debug_mode)
+                else:
+                    if debug_mode:
+                        st.warning("   ⚠️ No gemRateId found, skipping sales")
+                    sales_result = {
+                        'total_sales_in_db': 0,
+                        'sale1_price': None, 'sale2_price': None, 
+                        'sale3_price': None, 'sale4_price': None,
+                        'sale1_date': None, 'sale2_date': None,
+                        'sale3_date': None, 'sale4_date': None,
+                        'avg_last_4_sales': 0
+                    }
             else:
-                # Fallback: try using cardId without gemRateId
                 if debug_mode:
-                    st.warning("No gemRateId found, skipping...")
-                s_result = {
+                    st.warning("   ⚠️ No cardId found")
+                sales_result = {
                     'total_sales_in_db': 0,
-                    'sale1_price': None, 'sale2_price': None, 'sale3_price': None, 'sale4_price': None,
-                    'sale1_date': None, 'sale2_date': None, 'sale3_date': None, 'sale4_date': None,
+                    'sale1_price': None, 'sale2_price': None, 
+                    'sale3_price': None, 'sale4_price': None,
+                    'sale1_date': None, 'sale2_date': None,
+                    'sale3_date': None, 'sale4_date': None,
                     'avg_last_4_sales': 0
                 }
             
-            sales_data.append(s_result)
+            # Merge sales data with card
+            card.update(sales_result)
             
             # Update progress
             s_prog_val = (i + 1) / total_to_process
-            progress_sales.progress(s_prog_val, text=f"Card {i+1}/{total_to_process}: {card.get('label', 'Loading...')[:40]}")
-            time.sleep(0.2)
+            progress_sales.progress(s_prog_val, text=f"Processed {i+1}/{total_to_process}")
+            time.sleep(0.3)  # Rate limiting
         
-        # Merge data
-        for i, s in enumerate(sales_data):
-            cards[i].update(s)
-            
         progress_sales.empty()
 
         # --- PHASE 3: PROCESSING DATA ---
+        status.write("📊 Processing data...")
         df_full = pd.json_normalize(cards)
         scrape_date = datetime.now().strftime("%Y-%m-%d")
         df_full.insert(0, 'Scrape Date', scrape_date)
         
         # Generate URL using cardId
         if 'cardId' in df_full.columns:
-            df_full.insert(1, 'Card Unique URL', df_full['cardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True"))
+            df_full.insert(1, 'Card URL', df_full['cardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True" if x else "N/A"))
 
         # Define columns for output
         TARGET_COLS = [
-            'Scrape Date', 'Card Unique URL', 'label', 'condition', 
+            'Scrape Date', 'Card URL', 'label', 'condition', 
             'variation', 'player', 'currentValue',
             'sale1_price', 'sale1_date',
             'sale2_price', 'sale2_date', 
