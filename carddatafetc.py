@@ -22,7 +22,7 @@ def get_gspread_client():
             "client_id": "100678312403939380954",
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/web/v1/certs",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/cardladder%40cardladder.iam.gserviceaccount.com"
         }
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -42,21 +42,22 @@ def fetch_sales(token, card):
         'sale1_price': None,
         'sale2_price': None,
         'sale3_price': None,
+        'sale4_price': None,
         'avg_last_3_sales': 0
     }
     try:
-        params = {'index': 'salesarchive', 'query': label, 'limit': 3, 'sort': 'date', 'direction': 'desc'}
+        params = {'index': 'salesarchive', 'query': label, 'limit': 4, 'sort': 'date', 'direction': 'desc'}
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             prices = [h.get('price') for h in hits if h.get('price')]
-            for i in range(3):
+            for i in range(4):
                 if i < len(prices):
                     res_data[f'sale{i+1}_price'] = prices[i]
             if prices:
-                res_data['avg_last_3_sales'] = round(sum(prices)/len(prices), 2)
+                res_data['avg_last_3_sales'] = round(sum(prices[:3])/min(3, len(prices)), 2)
     except:
         pass
     return res_data
@@ -152,13 +153,13 @@ if st.button("🚀 Start Scrape"):
         df_full.insert(0, 'Scrape Date', scrape_date)
         
         if 'collectionCardId' in df_full.columns:
-            df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
+            df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=True"))
 
         # Define columns for Google Sheets
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
             'variation', 'player', 'currentValue', 'avg_last_3_sales', 
-            'total_sales_in_db'
+            'total_sales_in_db', 'sale1_price', 'sale2_price', 'sale3_price', 'sale4_price'
         ]
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
