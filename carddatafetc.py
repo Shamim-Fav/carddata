@@ -42,22 +42,21 @@ def fetch_sales(token, card):
         'sale1_price': None,
         'sale2_price': None,
         'sale3_price': None,
-        'sale4_price': None,
-        'avg_last_4_sales': 0
+        'avg_last_3_sales': 0
     }
     try:
-        params = {'index': 'salesarchive', 'query': label, 'limit': 4, 'sort': 'date', 'direction': 'desc'}
+        params = {'index': 'salesarchive', 'query': label, 'limit': 3, 'sort': 'date', 'direction': 'desc'}
         res = requests.get('https://search-zzvl7ri3bq-uc.a.run.app/search', headers=headers, params=params, timeout=10)
         if res.status_code == 200:
             data = res.json()
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
             prices = [h.get('price') for h in hits if h.get('price')]
-            for i in range(4):
+            for i in range(3):
                 if i < len(prices):
                     res_data[f'sale{i+1}_price'] = prices[i]
             if prices:
-                res_data['avg_last_4_sales'] = round(sum(prices)/len(prices), 2)
+                res_data['avg_last_3_sales'] = round(sum(prices)/len(prices), 2)
     except:
         pass
     return res_data
@@ -76,7 +75,7 @@ with st.sidebar:
         limit = st.number_input("Limit (number of cards)", value=5, min_value=1)
     else:
         st.info("Will fetch entire collection.")
-        limit = 50000  # High safety limit
+        limit = 50000 # High safety limit
 
 if st.button("🚀 Start Scrape"):
     if not auth_token:
@@ -152,19 +151,14 @@ if st.button("🚀 Start Scrape"):
         scrape_date = datetime.now().strftime("%Y-%m-%d")
         df_full.insert(0, 'Scrape Date', scrape_date)
         
-        # FIXED: Use cardId instead of collectionCardId for URLs
-        if 'cardId' in df_full.columns:
-            df_full.insert(1, 'Card Unique URL', df_full['cardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
-        elif 'collectionCardId' in df_full.columns:
-            st.warning("Using collectionCardId as fallback - card URLs may be incorrect for some cards")
+        if 'collectionCardId' in df_full.columns:
             df_full.insert(1, 'Card Unique URL', df_full['collectionCardId'].apply(lambda x: f"https://app.cardladder.com/card/{x}?profile=collection&showSales=true"))
 
-        # Define columns for Google Sheets (updated to include 4 sales)
+        # Define columns for Google Sheets
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
-            'variation', 'player', 'currentValue', 
-            'sale1_price', 'sale2_price', 'sale3_price', 'sale4_price',
-            'avg_last_4_sales', 'total_sales_in_db'
+            'variation', 'player', 'currentValue', 'avg_last_3_sales', 
+            'total_sales_in_db'
         ]
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
