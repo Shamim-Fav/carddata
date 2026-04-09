@@ -40,10 +40,14 @@ def fetch_sales(token, card):
     res_data = {
         'total_sales_in_db': 0,
         'sale1_price': None,
+        'sale1_date': None,
         'sale2_price': None,
+        'sale2_date': None,
         'sale3_price': None,
+        'sale3_date': None,
         'sale4_price': None,
-        'avg_last_3_sales': 0
+        'sale4_date': None,
+        'avg_last_4_sales': 0
     }
     try:
         params = {'index': 'salesarchive', 'query': label, 'limit': 4, 'sort': 'date', 'direction': 'desc'}
@@ -52,12 +56,16 @@ def fetch_sales(token, card):
             data = res.json()
             hits = data.get('hits', [])
             res_data['total_sales_in_db'] = data.get('totalHits', 0)
-            prices = [h.get('price') for h in hits if h.get('price')]
+            
             for i in range(4):
-                if i < len(prices):
-                    res_data[f'sale{i+1}_price'] = prices[i]
+                if i < len(hits):
+                    hit = hits[i]
+                    res_data[f'sale{i+1}_price'] = hit.get('price')
+                    res_data[f'sale{i+1}_date'] = hit.get('date')
+            
+            prices = [hit.get('price') for hit in hits if hit.get('price')]
             if prices:
-                res_data['avg_last_3_sales'] = round(sum(prices[:3])/min(3, len(prices)), 2)
+                res_data['avg_last_4_sales'] = round(sum(prices)/len(prices), 2)
     except:
         pass
     return res_data
@@ -158,8 +166,12 @@ if st.button("🚀 Start Scrape"):
         # Define columns for Google Sheets
         TARGET_COLS = [
             'Scrape Date', 'Card Unique URL', 'label', 'condition', 
-            'variation', 'player', 'currentValue', 'avg_last_3_sales', 
-            'total_sales_in_db', 'sale1_price', 'sale2_price', 'sale3_price', 'sale4_price'
+            'variation', 'player', 'currentValue', 'avg_last_4_sales', 
+            'total_sales_in_db', 
+            'sale1_price', 'sale1_date', 
+            'sale2_price', 'sale2_date', 
+            'sale3_price', 'sale3_date', 
+            'sale4_price', 'sale4_date'
         ]
         df_filtered = df_full.reindex(columns=TARGET_COLS).fillna('')
 
